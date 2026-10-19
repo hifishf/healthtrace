@@ -1,0 +1,184 @@
+# HealthTrace 本地开发环境
+# 两组服务：
+#   1) 应用侧基础设施：db(pgvector 版 PostgreSQL) + cache(Redis)
+#   2) Langfuse v3 自托管（可观测平台）：postgres/clickhouse/redis/minio/web/worker
+#
+# 端口约定（宿主侧）：
+#   - db          -> 5432（本机 5432 空闲）
+#   - cache       -> 6380（本机 6379 已被本地 redis-server 占用，故避开）
+#   - langfuse-web -> 3000（UI + API + OTel 入口）
+#   - minio       -> 9090(S3 API) / 9091(控制台，可选)
+# Langfuse 内部服务（postgres/clickhouse/redis）只在本 compose 网络内互通，不映射宿主端口。
+
+# Langfuse 公共环境变量（web 与 worker 共用）
+x-langfuse-env: &langfuse-env
+  NEXTAUTH_URL: http://localhost:3000
+  # 以下三项为自托管认证/加密密钥，生产需改（# CHANGEME），本地开发用固定值即可
+  NEXTAUTH_SECRET: healthtrace-dev-nextauth-secret-CHANGEME
+  SALT: healthtrace-dev-salt-CHANGEME
+  # ENCRYPTION_KEY 为 32 字节十六进制（64 个 hex 字符），可用 `openssl rand -hex 32` 生成
+  ENCRYPTION_KEY: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff
+  DATABASE_URL: postgresql://postgres:postgres@langfuse-postgres:5432/postgres
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: clickhouse
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:clickhouse@langfuse-clickhouse:9000
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: 6379
+  S3_ENDPOINT: http://langfuse-minio:9000
+  S3_ACCESS_KEY_ID: minio
+  S3_SECRET_ACCESS_KEY: miniosecret
+  S3_BUCKET_NAME: langfuse
+  S3_REGION: us-east-1
+  S3_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: us-east-1
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+
+services:
+  # ================= 应用侧基础设施 =================
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: healthtrace-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: healthtrace
+      POSTGRES_PASSWORD: healthtrace
+      POSTGRES_DB: healthtrace
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./schema/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthtrace -d healthtrace"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  cache:
+    image: redis:7-alpine
+    container_name: healthtrace-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ================= Langfuse v3 自托管 =================
+  langfuse-postgres:
+    image: postgres:16
+    container_name: langfuse-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - langfuse_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: langfuse-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: langfuse-clickhouse
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  langfuse-minio:
+    image: minio/minio
+    container_name: langfuse-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - "9090:9000"   # S3 API
+      - "9091:9001"   # MinIO 控制台（可选）
+    volumes:
+      - langfuse_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: langfuse-web
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *langfuse-env
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: langfuse-worker
+    restart: unless-stopped
+    depends_on:
+      langfuse-postgres:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+    environment:
+      <<: *langfuse-env
+
+volumes:
+  pg_data:
+  langfuse_pg_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:
