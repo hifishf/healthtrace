@@ -22,22 +22,38 @@ x-langfuse-env: &langfuse-env
   CLICKHOUSE_URL: http://langfuse-clickhouse:8123
   CLICKHOUSE_USER: clickhouse
   CLICKHOUSE_PASSWORD: clickhouse
-  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:clickhouse@langfuse-clickhouse:9000
+  CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
   CLICKHOUSE_CLUSTER_ENABLED: "false"
   REDIS_HOST: langfuse-redis
   REDIS_PORT: 6379
-  S3_ENDPOINT: http://langfuse-minio:9000
-  S3_ACCESS_KEY_ID: minio
-  S3_SECRET_ACCESS_KEY: miniosecret
-  S3_BUCKET_NAME: langfuse
-  S3_REGION: us-east-1
-  S3_FORCE_PATH_STYLE: "true"
-  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+  REDIS_AUTH: ""
+  # —— 事件 / 媒体 / 导出统一落到同一个 MinIO 桶 `langfuse`，用不同 prefix 区分 ——
+  # 事件上传（trace/observation，v3 必填）：worker 在 compose 网络内直连 minio
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  # 媒体上传（浏览器直传，走宿主 9090）
   LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
   LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
   LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
-  LANGFUSE_S3_MEDIA_UPLOAD_REGION: us-east-1
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
   LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+  # 批量导出（默认关闭）
+  LANGFUSE_S3_BATCH_EXPORT_ENABLED: "false"
+  LANGFUSE_S3_BATCH_EXPORT_BUCKET: langfuse
+  LANGFUSE_S3_BATCH_EXPORT_PREFIX: exports/
+  LANGFUSE_S3_BATCH_EXPORT_REGION: auto
+  LANGFUSE_S3_BATCH_EXPORT_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_BATCH_EXPORT_EXTERNAL_ENDPOINT: http://localhost:9090
+  LANGFUSE_S3_BATCH_EXPORT_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: miniosecret
+  LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: "true"
 
 services:
   # ================= 应用侧基础设施 =================
@@ -142,6 +158,20 @@ services:
       retries: 10
       start_period: 10s
 
+  # 一次性初始化：在 MinIO 里创建 Langfuse 使用的 `langfuse` 桶（幂等）
+  langfuse-minio-init:
+    image: minio/minio
+    container_name: langfuse-minio-init
+    restart: "no"
+    depends_on:
+      langfuse-minio:
+        condition: service_healthy
+    environment:
+      # MC_HOST_<alias> 让 mc 用指定凭据访问 minio，避免依赖镜像预置的 local 别名
+      MC_HOST_s3: http://minio:miniosecret@langfuse-minio:9000
+    entrypoint: ["mc"]
+    command: ["mb", "--ignore-existing", "s3/langfuse"]
+
   langfuse-web:
     image: langfuse/langfuse:3
     container_name: langfuse-web
@@ -155,6 +185,8 @@ services:
         condition: service_healthy
       langfuse-minio:
         condition: service_healthy
+      langfuse-minio-init:
+        condition: service_completed_successfully
     ports:
       - "3000:3000"
     environment:
@@ -173,6 +205,8 @@ services:
         condition: service_healthy
       langfuse-minio:
         condition: service_healthy
+      langfuse-minio-init:
+        condition: service_completed_successfully
     environment:
       <<: *langfuse-env
 
