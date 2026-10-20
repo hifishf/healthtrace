@@ -1,17 +1,22 @@
 """FastAPI 应用入口。"""
 from fastapi import Depends, FastAPI
+from langchain_core.messages import HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import crud
+from app.agent.graph import build_agent_graph
 from app.config import settings
 from app.db import async_session
 from app.observability import get_tracer, init_observability
-from app.schemas import MetricCreate, MetricResponse
+from app.schemas import ChatRequest, ChatResponse, MetricCreate, MetricResponse
 
 app = FastAPI(title="HealthTrace API", version="0.1.0")
 
 init_observability()
 tracer = get_tracer()
+
+# 父图（Router -> chat/占位）：模块级构建一次，复用
+agent_graph = build_agent_graph()
 
 
 async def get_session() -> AsyncSession:
@@ -51,3 +56,22 @@ async def create_metric(
             llm_span.set_attribute("langfuse.observation.output", "ok")
 
         return MetricResponse(ok=True, id=record_id)
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(payload: ChatRequest) -> ChatResponse:
+    """对话入口：跑一遍父图（Router -> chat/占位），返回路由结果与回复。"""
+    with tracer.start_as_current_span("chat") as root_span:
+        root_span.set_attribute("langfuse.trace.name", "健康对话")
+        root_span.set_attribute("langfuse.user.id", str(settings.default_user_id))
+
+        result = await agent_graph.ainvoke(
+            {"messages": [HumanMessage(content=payload.text)]}
+        )
+        reply = result["messages"][-1].content
+
+        return ChatResponse(
+            intent=result["intent"],
+            confidence=result["confidence"],
+            reply=reply,
+        )

@@ -32,3 +32,17 @@ class RouteDecision(BaseModel):
     intent: Literal["triage", "insight", "report", "chat"]
     confidence: float
     extracted_slots: dict = Field(default_factory=dict)
+
+
+class ChatRequest(BaseModel):
+    """POST /chat 请求体：用户一句话。"""
+
+    text: str = Field(min_length=1)
+
+
+class ChatResponse(BaseModel):
+    """POST /chat 响应：路由结果 + 最终回复（第 4 步非流式）。"""
+
+    intent: str
+    confidence: float
+    reply: str
