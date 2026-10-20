@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
+    # LLM（OpenAI 兼容接口，默认 DeepSeek）
+    llm_base_url: str = "https://api.deepseek.com"
+    llm_api_key: str = ""
+    llm_model: str = "deepseek-chat"
+    # Router 置信度阈值：低于该值强制回落 chat 兜底
+    router_confidence_threshold: float = 0.7
     # 单用户：固定默认 user_id（与 schema/init.sql 种子一致）
     default_user_id: UUID = UUID("00000000-0000-0000-0000-000000000001")
 
