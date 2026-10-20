@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from langchain_core.tools import tool
 
-from app import crud
+from app import crud, portrait
 from app.config import settings
 from app.db import async_session
 
@@ -46,6 +46,8 @@ async def record_metric(
             recorded_date=record_date,
             source="chat",
         )
+        # 记录指标 = 画像数据变过，刷新画像 updated_at（“画像更新”）
+        await portrait.touch_portrait(session, settings.default_user_id)
 
     return {
         "ok": True,
@@ -55,3 +57,13 @@ async def record_metric(
         "unit": unit,
         "date": record_date.isoformat(),
     }
+
+
+@tool
+async def query_profile() -> dict:
+    """查询当前用户的健康画像（出生年份、性别、身高、体重、BMI 等）。
+
+    无参数（单用户）。返回画像字段 dict；无画像时返回空 dict。
+    """
+    async with async_session() as session:
+        return await portrait.get_health_portrait(session, settings.default_user_id)

@@ -4,9 +4,9 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.agent.llm import get_llm
-from app.agent.tools import record_metric
+from app.agent.tools import query_profile, record_metric
 
-_CHAT_TOOLS = [record_metric]
+_CHAT_TOOLS = [record_metric, query_profile]
 
 
 def build_chat_graph(model: Runnable | None = None):
