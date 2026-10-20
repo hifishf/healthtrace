@@ -1,10 +1,14 @@
 """FastAPI 应用入口。"""
 from fastapi import Depends, FastAPI
+from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import crud
+from app.agent.chat import build_chat_graph
 from app.agent.graph import build_agent_graph
+from app.agent.llm import get_llm
+from app.agent.stream import chat_event_stream
 from app.config import settings
 from app.db import async_session
 from app.observability import get_tracer, init_observability
@@ -15,8 +19,10 @@ app = FastAPI(title="HealthTrace API", version="0.1.0")
 init_observability()
 tracer = get_tracer()
 
-# 父图（Router -> chat/占位）：模块级构建一次，复用
-agent_graph = build_agent_graph()
+# Router LLM + chat 子图 + 父图：模块级构建一次，复用（流式与非流式共用）
+router_llm = get_llm()
+chat_graph = build_chat_graph()
+agent_graph = build_agent_graph(router_llm=router_llm, chat_graph=chat_graph)
 
 
 async def get_session() -> AsyncSession:
@@ -75,3 +81,12 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             confidence=result["confidence"],
             reply=reply,
         )
+
+
+@app.post("/chat/stream")
+async def chat_stream(payload: ChatRequest) -> StreamingResponse:
+    """SSE 流式对话：route -> chat token 片段 -> done。"""
+    return StreamingResponse(
+        chat_event_stream(payload.text, router_llm, chat_graph),
+        media_type="text/event-stream",
+    )

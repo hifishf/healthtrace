@@ -14,6 +14,11 @@ from app.agent.router import route
 _STUB_TEMPLATE = "你这句话被路由到「{intent}」意图，该能力将在后续周实现，本周暂不支持。"
 
 
+def stub_reply(intent: str) -> str:
+    """非 chat 意图的占位回复。"""
+    return _STUB_TEMPLATE.format(intent=intent)
+
+
 class AgentState(TypedDict):
     """父图状态：对话消息 + 路由结果。"""
 
@@ -48,7 +53,7 @@ def build_agent_graph(
 
     async def stub_node(state: AgentState) -> dict:
         # 非 chat 意图占位：返回一句后续周实现的提示，不崩溃
-        reply = _STUB_TEMPLATE.format(intent=state["intent"])
+        reply = stub_reply(state["intent"])
         return {"messages": [AIMessage(content=reply)]}
 
     graph = StateGraph(AgentState)
