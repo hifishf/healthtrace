@@ -14,6 +14,9 @@ venv/
 # 个人笔记（本地回顾用，不上传 GitHub）
 notes/
 
+# 项目文档（本地私有，不入库）
+HealthTrace-项目文档-v3.1.md
+
 # IDE / OS
 .idea/
 .vscode/
