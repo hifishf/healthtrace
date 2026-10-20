@@ -15,6 +15,9 @@ class Settings(BaseSettings):
 
     # 应用数据库（docker-compose 里的 db 服务）
     database_url: str = "postgresql+asyncpg://healthtrace:healthtrace@localhost:5432/healthtrace"
+    # LangGraph Postgres checkpointer（psycopg 驱动；与 SQLAlchemy 的 asyncpg 分开，
+    # 因为 AsyncPostgresSaver 走 psycopg，不认 asyncpg 的连接串）
+    checkpoint_database_url: str = "postgresql://healthtrace:healthtrace@localhost:5432/healthtrace"
     # Redis（docker-compose 里的 cache 服务，宿主端口 6380）
     redis_url: str = "redis://localhost:6380/0"
     # Langfuse 自托管（第 5 步接 OTel 用）
