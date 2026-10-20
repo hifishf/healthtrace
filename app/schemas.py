@@ -23,15 +23,23 @@ class MetricResponse(BaseModel):
 
 
 class RouteDecision(BaseModel):
-    """Router 结构化输出：一句话的意图分类结果。
+    """Router 结构化输出：一句话的意图分类结果。"""
 
-    intent 为严格枚举；confidence 是 LLM 自评的把握（未经校准，非概率）。
-    extracted_slots 本周占位，第 3 周抽症状槽位时启用。
-    """
-
-    intent: Literal["triage", "insight", "report", "chat"]
-    confidence: float
-    extracted_slots: dict = Field(default_factory=dict)
+    intent: Literal["triage", "insight", "report", "chat"] = Field(
+        description=(
+            "意图分类：triage=追问分诊 / insight=因果分析 / "
+            "report=报告解读 / chat=闲聊或记录指标"
+        )
+    )
+    confidence: float = Field(
+        ge=0,
+        le=1,
+        description="0~1 之间的把握程度，越大越确定；LLM 自评、未经校准，不是概率",
+    )
+    extracted_slots: dict = Field(
+        default_factory=dict,
+        description='从用户话里抽出的槽位，如 {"symptom": "疲劳"}；本周占位，第 3 周启用',
+    )
 
 
 class ChatRequest(BaseModel):
