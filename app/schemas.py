@@ -42,6 +42,19 @@ class RouteDecision(BaseModel):
     )
 
 
+class SymptomExtraction(BaseModel):
+    """症状抽取结构化输出：症状列表 + 主体边界（self/other）。"""
+
+    symptoms: list[str] = Field(
+        default_factory=list,
+        description="抽取的症状规范短名称，如 乏力/胸痛/头晕；没有症状则为空列表",
+    )
+    subject: Literal["self", "other"] = Field(
+        default="self",
+        description="症状属于用户本人 self 还是他人 other（他人如 我爸爸/我妈/孩子/朋友）",
+    )
+
+
 class ChatRequest(BaseModel):
     """POST /chat 请求体：用户一句话。"""
 

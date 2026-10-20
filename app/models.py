@@ -4,6 +4,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import (
+    ARRAY,
     TIMESTAMP,
     Computed,
     Date,
@@ -63,3 +64,14 @@ class HealthProfile(Base):
     updated_at: Mapped[datetime | None] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True
     )
+
+
+class Symptom(Base):
+    """知识库症状（追问分诊的症状词典，name 唯一）。"""
+
+    __tablename__ = "symptoms"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True)
+    synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True)
