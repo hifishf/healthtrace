@@ -2,9 +2,10 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import delete, select
 
-from app.agent.tools import record_metric
+from app.agent.tools import resolve_metric_date, record_metric
 from app.config import settings
 from app.db import async_session
 from app.models import MetricRecord
@@ -72,3 +73,19 @@ async def test_record_metric_invalid_date() -> None:
     )
     assert result["ok"] is False
     assert result["error_code"] == "INVALID_DATE"
+
+
+@pytest.mark.parametrize(
+    ("date_text", "expected"),
+    [
+        ("2026-02-11", date(2026, 2, 11)),
+        ("今天", date(2026, 10, 20)),
+        ("昨晚", date(2026, 10, 19)),
+        ("前天", date(2026, 10, 18)),
+        ("三天前", date(2026, 10, 17)),
+        ("昨天的昨天的昨天", date(2026, 10, 17)),
+    ],
+)
+def test_resolve_metric_date(date_text: str, expected: date) -> None:
+    """绝对日期和相对日期都按固定基准日确定性换算。"""
+    assert resolve_metric_date(date_text, today=date(2026, 10, 20)) == expected

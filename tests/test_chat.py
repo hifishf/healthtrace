@@ -2,10 +2,10 @@
 from datetime import date
 from decimal import Decimal
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from sqlalchemy import delete, select
 
-from app.agent.chat import build_chat_graph
+from app.agent.chat import build_chat_graph, build_chat_system_prompt
 from app.config import settings
 from app.db import async_session
 from app.models import MetricRecord
@@ -80,3 +80,36 @@ async def test_chat_subgraph_records_metric_and_replies() -> None:
         assert rows[0].value == Decimal("6")
     finally:
         await _cleanup()
+
+
+class _CaptureModel:
+    """记录模型入参，用于验证日期上下文注入。"""
+
+    def __init__(self) -> None:
+        self.messages = []
+
+    async def ainvoke(self, messages):
+        self.messages = messages
+        return AIMessage(content="好的")
+
+
+async def test_chat_agent_injects_current_date_context() -> None:
+    """chat 模型每次调用都能看到当前日期，且不自行换算相对日期。"""
+    model = _CaptureModel()
+    graph = build_chat_graph(model=model)
+
+    await graph.ainvoke(
+        {"messages": [HumanMessage(content="昨天的昨天的昨天睡了 12 小时")]}
+    )
+
+    assert isinstance(model.messages[0], SystemMessage)
+    assert "当前日期是" in model.messages[0].content
+    assert "不要在模型侧把相对日期换算" in model.messages[0].content
+    assert "昨天的昨天的昨天" in model.messages[0].content
+    assert model.messages[1].content == "昨天的昨天的昨天睡了 12 小时"
+
+
+def test_build_chat_system_prompt_uses_fixed_date() -> None:
+    """提示词可使用固定日期测试，避免依赖机器当前时间。"""
+    prompt = build_chat_system_prompt(date(2026, 10, 20))
+    assert "当前日期是 2026-10-20" in prompt
