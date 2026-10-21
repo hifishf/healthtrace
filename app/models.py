@@ -72,10 +72,10 @@ class Symptom(Base):
 
     __tablename__ = "symptoms"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(100), unique=True)
-    synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
-    category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)  # 自增主键
+    name: Mapped[str] = mapped_column(String(100), unique=True)  # 症状标准名（归一化唯一名）
+    synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)  # 同义词数组（口语化/错别字归一化）
+    category: Mapped[str | None] = mapped_column(String(50), nullable=True)  # 症状分类
 
 
 class Disease(Base):
@@ -83,10 +83,10 @@ class Disease(Base):
 
     __tablename__ = "diseases"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(200), unique=True)
-    department: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    urgency_hint: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)  # 自增主键
+    name: Mapped[str] = mapped_column(String(200), unique=True)  # 疾病名（唯一）
+    department: Mapped[str | None] = mapped_column(String(100), nullable=True)  # 所属科室
+    urgency_hint: Mapped[str | None] = mapped_column(String(30), nullable=True)  # 分级建议等级：observe/adjust/online_consult/seek_care
 
 
 class DiseaseSymptom(Base):
@@ -94,8 +94,8 @@ class DiseaseSymptom(Base):
 
     __tablename__ = "disease_symptoms"
 
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    disease_id: Mapped[int] = mapped_column(Integer, ForeignKey("diseases.id"))
-    symptom_id: Mapped[int] = mapped_column(Integer, ForeignKey("symptoms.id"))
-    prevalence: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
-    discrimination_weight: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)  # 自增主键
+    disease_id: Mapped[int] = mapped_column(Integer, ForeignKey("diseases.id"))  # 疾病 id，引用 diseases.id
+    symptom_id: Mapped[int] = mapped_column(Integer, ForeignKey("symptoms.id"))  # 症状 id，引用 symptoms.id
+    prevalence: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)  # 该症状在该疾病中的出现率（演示近似值）
+    discrimination_weight: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 鉴别价值 1-5，第 4 周启用排序
