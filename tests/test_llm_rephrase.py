@@ -75,6 +75,13 @@ async def test_question_rephrased_by_llm() -> None:
     assert result["__interrupt__"][0].value.get("question") == "最近会不会觉得特别没力气呀？"
 
 
+def test_question_prompt_forbids_claiming_user_mentioned() -> None:
+    """追问转写提示词禁止声称「您提到有…」，避免编造用户说过的症状。"""
+    from app.agent.triage import _QUESTION_REPHRASE_SYSTEM
+
+    assert "不要声称用户提到过该症状" in _QUESTION_REPHRASE_SYSTEM
+
+
 async def test_question_falls_back_to_template_when_llm_fails() -> None:
     """LLM 转写失败 → 追问回退确定性模板。"""
     llm = _FakeLLM(_fatigue_then_empty, rephrase_fn=None)

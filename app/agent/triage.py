@@ -75,10 +75,12 @@ _SUGGESTIONS: dict[str, str] = {
 _QUESTION_REPHRASE_SYSTEM = (
     "你是 HealthTrace 的健康管家。请把待确认的症状改写成一句自然、温和的中文追问。"
     "只输出这一句话，不要加引号，不要引入新的症状，不要给出诊断或医疗建议。"
+    "不要声称用户提到过该症状（不要写「您提到有…」）；用询问的方式，例如「最近有没有…」。"
 )
 _ADVICE_WRITE_SYSTEM = (
     "你是 HealthTrace 的健康管家。根据给定的确定性分级和候选方向，写一句温和、清楚的中文建议。"
     "必须遵守：不输出诊断结论（不说「你得了某病」），不推荐处方药，紧急时建议就医。"
+    "只能使用给定的候选方向、已采集症状和画像，不要编造用户未提供的信息。"
     "只输出建议这一句，不要加引号，不要改写给定级别。"
 )
 
@@ -86,6 +88,12 @@ _ADVICE_WRITE_SYSTEM = (
 # 因为“没有”里包含“有”，先判否定才不会被误判成肯定）
 _NEGATIVE_MARKERS: tuple[str, ...] = ("没有", "没", "无", "不是", "不会", "否")
 _AFFIRMATIVE_MARKERS: tuple[str, ...] = ("有", "是", "对", "嗯", "会", "出现过", "偶尔会")
+# 方向性症状的正反词对：回答与待问方向相反时，视为对该症状的否定（不再追问）
+_OPPOSITE_PAIRS: tuple[tuple[str, str], ...] = (
+    ("下降", "上升"),
+    ("减少", "增加"),
+    ("降低", "升高"),
+)
 
 
 def answer_polarity(answer: str) -> str:
@@ -100,6 +108,18 @@ def answer_polarity(answer: str) -> str:
         if marker in value:
             return "affirm"
     return "unknown"
+
+
+def contradicts_pending(answer: str, pending_name: str) -> bool:
+    """回答是否明确与待问症状方向相反（如待问体重下降、回答体重上升）。"""
+    if not pending_name:
+        return False
+    for positive, opposite in _OPPOSITE_PAIRS:
+        if positive in pending_name and opposite in answer:
+            return True
+        if opposite in pending_name and positive in answer:
+            return True
+    return False
 
 
 def initial_triage_state(text: str) -> dict:
@@ -239,9 +259,7 @@ def build_triage_graph(llm=None, checkpointer=None):
     async def extract_node(state: TriageState) -> dict:
         """入口：加载画像 -> 抽症状 -> 红旗/主体边界 -> 归一化 -> 候选集 -> 选下一问。"""
         text = state["messages"][-1].content
-        # 上一轮追问（若本轮是对它的回答，需确定性回填/记排除）
         pending_q = state.get("pending_question")
-        answered_polarity = answer_polarity(text) if pending_q else "unknown"
 
         async with async_session() as session:
             loaded_portrait = await portrait.get_health_portrait(
@@ -251,6 +269,14 @@ def build_triage_graph(llm=None, checkpointer=None):
         extraction = await extract_symptoms(
             text, llm, portrait_summary=portrait.summarize(loaded_portrait)
         )
+        # 只有「纯是/否回答」才用极性回填/排除；带实质内容的回答交给症状抽取，
+        # 避免把待问的「体重下降」误回填。方向相反（如下降 vs 上升）视为否定、不再追问。
+        answered_polarity = "unknown"
+        if pending_q:
+            if not extraction.symptoms:
+                answered_polarity = answer_polarity(text)
+            elif contradicts_pending(text, pending_q.get("name", "")):
+                answered_polarity = "deny"
         red_flag = check_red_flag(text, extraction.subject)
 
         if red_flag.triggered:

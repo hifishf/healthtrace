@@ -41,6 +41,15 @@ def _fatigue_only(text: str) -> SymptomExtraction:
     return SymptomExtraction(symptoms=[], subject="self")
 
 
+def _insomnia_then_weight_up(text: str) -> SymptomExtraction:
+    """首轮抽到失眠；「体重有点上升」抽到体重上升（与待问的体重下降不是同一症状）。"""
+    if "失眠" in text:
+        return SymptomExtraction(symptoms=["失眠"], subject="self")
+    if "上升" in text:
+        return SymptomExtraction(symptoms=["体重上升"], subject="self")
+    return SymptomExtraction(symptoms=[], subject="self")
+
+
 async def _drive_interrupts(
     graph,
     config,
@@ -100,3 +109,26 @@ async def test_negative_answer_ruled_out_and_not_reasked() -> None:
     assert questions[0] != questions[1]  # 不再重复问同一个症状
     assert len(result["ruled_out_symptoms"]) == 1  # 已排除的症状
     assert len(result["collected_symptoms"]) == 1  # 只有乏力，没被回填
+
+
+async def test_contentful_answer_does_not_backfill_pending_symptom() -> None:
+    """带实质内容的回答（体重有点上升）不被当成对「体重下降」的肯定回填。"""
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.checkpoint_database_url
+    ) as saver:
+        await saver.setup()
+        graph = build_triage_graph(llm=_FakeLLM(_insomnia_then_weight_up), checkpointer=saver)
+        config = {"configurable": {"thread_id": f"content-{uuid.uuid4().hex[:8]}"}}
+        result = await graph.ainvoke(initial_triage_state("我最近失眠"), config=config)
+        assert len(result["collected_symptoms"]) == 1  # 只有失眠
+
+        # 先否掉第一问（嗜睡），让第二问落到「体重下降」
+        result = await graph.ainvoke(Command(resume="不会"), config=config)
+        result = await graph.ainvoke(Command(resume="体重有点上升"), config=config)
+
+    # 没有把待问的症状（如体重下降）误回填；只有失眠
+    assert len(result["collected_symptoms"]) == 1
+    # 方向相反（下降 vs 上升）视为否定，不再重复追问
+    assert "体重下降" in result["ruled_out_symptoms"].values()
+    if "__interrupt__" in result:
+        assert "体重下降" not in result["__interrupt__"][0].value.get("question", "")
