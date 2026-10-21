@@ -2,6 +2,7 @@
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.observability import llm_span, set_output
 from app.schemas import SymptomExtraction
 
 
@@ -80,14 +81,23 @@ async def extract_symptoms(
     portrait_summary 为画像一行摘要；pending_question 为上一轮追问，
     用于让 LLM 判定这句话是肯定/否定/相反/无关/不清楚。
     """
-    runnable = llm.with_structured_output(SymptomExtraction, method="function_calling")
-    result = await runnable.ainvoke(
-        [
-            SystemMessage(
-                content=build_system_prompt(portrait_summary, pending_question)
-            ),
-            HumanMessage(content=text),
-        ]
-    )
+    with llm_span(
+        "llm.triage.extract_symptoms",
+        {
+            "text": text,
+            "portrait": portrait_summary,
+            "pending_question": pending_question,
+        },
+    ):
+        runnable = llm.with_structured_output(SymptomExtraction, method="function_calling")
+        result = await runnable.ainvoke(
+            [
+                SystemMessage(
+                    content=build_system_prompt(portrait_summary, pending_question)
+                ),
+                HumanMessage(content=text),
+            ]
+        )
+        set_output(result)
     # 主体边界：确定性指代词优先，LLM 只是补充，避免“我爸爸胸痛”被误判成 self
     return result.model_copy(update={"subject": resolve_subject(text, result.subject)})

@@ -123,6 +123,7 @@ async def triage(payload: TriageRequest, request: Request) -> TriageResponse:
 
     with tracer.start_as_current_span("triage") as root_span:
         root_span.set_attribute("langfuse.trace.name", "追问分诊")
+        root_span.set_attribute("langfuse.session.id", thread_id)
         root_span.set_attribute("langfuse.user.id", str(settings.default_user_id))
         if payload.thread_id is None:
             result = await graph.ainvoke(initial_triage_state(payload.text), config=config)

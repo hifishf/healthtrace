@@ -21,6 +21,7 @@ from app.kb import (
     select_followup_questions,
     top_tier_size,
 )
+from app.observability import llm_span, set_attr, set_output, traced
 
 # 追问硬上限（状态机边条件，不依赖 LLM 自觉）
 MAX_FOLLOWUP_ROUNDS = 3
@@ -158,9 +159,18 @@ async def _rephrase_question(
             f"已采集症状：{'、'.join(collected_names) if collected_names else '无'}\n"
             f"健康画像：{portrait_summary or '暂无'}"
         )
-        response = await llm.ainvoke(
-            [SystemMessage(content=_QUESTION_REPHRASE_SYSTEM), HumanMessage(content=context)]
-        )
+        with llm_span(
+            "llm.triage.rephrase_question",
+            {
+                "symptom": name,
+                "collected": collected_names,
+                "portrait": portrait_summary,
+            },
+        ):
+            response = await llm.ainvoke(
+                [SystemMessage(content=_QUESTION_REPHRASE_SYSTEM), HumanMessage(content=context)]
+            )
+            set_output((response.content or "").strip())
         text = (response.content or "").strip()
         return text or fallback
     except Exception:
@@ -184,9 +194,19 @@ async def _write_advice(
             f"已采集症状：{'、'.join(collected_names) if collected_names else '无'}\n"
             f"健康画像：{portrait_summary or '暂无'}"
         )
-        response = await llm.ainvoke(
-            [SystemMessage(content=_ADVICE_WRITE_SYSTEM), HumanMessage(content=context)]
-        )
+        with llm_span(
+            "llm.triage.write_advice",
+            {
+                "level": level,
+                "conditions": condition_names,
+                "collected": collected_names,
+                "portrait": portrait_summary,
+            },
+        ):
+            response = await llm.ainvoke(
+                [SystemMessage(content=_ADVICE_WRITE_SYSTEM), HumanMessage(content=context)]
+            )
+            set_output((response.content or "").strip())
         text = (response.content or "").strip()
         return text or fallback
     except Exception:
@@ -228,12 +248,15 @@ def build_triage_graph(llm=None, checkpointer=None):
     if llm is None:
         llm = get_llm()
 
+    @traced("graph.triage.advise")
     async def advise_node(state: TriageState) -> dict:
         """生成最终分级建议：级别由确定性规则算，措辞由 LLM 转写（失败回退模板）。"""
         if state.get("final_advice") is not None:
+            set_attr("triage.level", state["final_advice"].get("level"))
             return {}
         # 未识别到症状：不给健康建议，提示重新描述
         if not state.get("collected_symptoms") or not state.get("candidate_conditions"):
+            set_attr("triage.level", "no_symptom")
             return {"final_advice": _NO_SYMPTOM_ADVICE}
         level = classify_advice_level_by_hints(
             [candidate.get("urgency_hint") for candidate in state["candidate_conditions"]]
@@ -247,6 +270,9 @@ def build_triage_graph(llm=None, checkpointer=None):
             list(state["collected_symptoms"].values()),
             portrait.summarize(state.get("health_portrait") or {}),
         )
+        set_attr("triage.level", level)
+        set_attr("triage.conditions", [candidate["name"] for candidate in candidates])
+        set_attr("triage.suggestion", suggestion)
         return {
             "final_advice": {
                 "level": level,
@@ -256,10 +282,13 @@ def build_triage_graph(llm=None, checkpointer=None):
             }
         }
 
+    @traced("graph.triage.extract")
     async def extract_node(state: TriageState) -> dict:
         """入口：加载画像 -> 抽症状 -> 红旗/主体边界 -> 归一化 -> 候选集 -> 选下一问。"""
         text = state["messages"][-1].content
         pending_q = state.get("pending_question")
+        set_attr("triage.text", text)
+        set_attr("triage.pending_question", pending_q.get("text") if pending_q else None)
 
         async with async_session() as session:
             loaded_portrait = await portrait.get_health_portrait(
@@ -281,6 +310,10 @@ def build_triage_graph(llm=None, checkpointer=None):
             elif contradicts_pending(text, pending_q.get("name", "")):
                 answered_verdict = "contradict"
         red_flag = check_red_flag(text, extraction.subject)
+        set_attr("triage.symptoms", extraction.symptoms)
+        set_attr("triage.subject", extraction.subject)
+        set_attr("triage.answer_verdict", answered_verdict)
+        set_attr("triage.red_flag", red_flag.triggered)
 
         if red_flag.triggered:
             return {
@@ -319,6 +352,11 @@ def build_triage_graph(llm=None, checkpointer=None):
                 )
             ruled_out_ids = [int(key) for key in ruled_out]
             candidates = await compute_candidates(session, collected_ids)
+            set_attr("triage.collected", list(collected.values()))
+            set_attr("triage.ruled_out", list(ruled_out.values()))
+            set_attr("triage.candidate_count", len(candidates))
+            set_attr("triage.top_tier_count", top_tier_size(candidates))
+            set_attr("triage.candidates", [candidate.name for candidate in candidates])
             # 已到追问硬上限：不再选下一问，避免最后一轮做无用的追问查询
             pending = []
             if state["followup_round"] < MAX_FOLLOWUP_ROUNDS:
@@ -344,6 +382,7 @@ def build_triage_graph(llm=None, checkpointer=None):
                 "name": name,
                 "text": question_text,
             }
+        set_attr("triage.next_question", next_question["text"] if next_question else None)
 
         return {
             "health_portrait": loaded_portrait,
