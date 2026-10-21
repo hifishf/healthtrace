@@ -267,16 +267,19 @@ def build_triage_graph(llm=None, checkpointer=None):
             )
 
         extraction = await extract_symptoms(
-            text, llm, portrait_summary=portrait.summarize(loaded_portrait)
+            text,
+            llm,
+            portrait_summary=portrait.summarize(loaded_portrait),
+            pending_question=pending_q.get("text") if pending_q else None,
         )
-        # 只有「纯是/否回答」才用极性回填/排除；带实质内容的回答交给症状抽取，
-        # 避免把待问的「体重下降」误回填。方向相反（如下降 vs 上升）视为否定、不再追问。
-        answered_polarity = "unknown"
-        if pending_q:
+        # 追问回答判定以 LLM 结构化结果为主（理解语义），状态更新仍确定性执行；
+        # LLM 判不清时回退到确定性极性/反向词兜底。
+        answered_verdict = extraction.answer_verdict if pending_q else "not_applicable"
+        if pending_q and answered_verdict in ("unclear", "not_applicable"):
             if not extraction.symptoms:
-                answered_polarity = answer_polarity(text)
+                answered_verdict = answer_polarity(text)
             elif contradicts_pending(text, pending_q.get("name", "")):
-                answered_polarity = "deny"
+                answered_verdict = "contradict"
         red_flag = check_red_flag(text, extraction.subject)
 
         if red_flag.triggered:
@@ -294,7 +297,7 @@ def build_triage_graph(llm=None, checkpointer=None):
         async with async_session() as session:
             symptom_ids = await match_symptoms(session, extraction.symptoms)
             # 肯定回答回填：答「有」时 LLM 抽不到症状，直接用上一轮 pending 症状补上
-            if answered_polarity == "affirm" and pending_q and pending_q.get("id") is not None:
+            if answered_verdict == "affirm" and pending_q and pending_q.get("id") is not None:
                 pending_id = int(pending_q["id"])
                 if pending_id not in symptom_ids:
                     symptom_ids.append(pending_id)
@@ -305,7 +308,11 @@ def build_triage_graph(llm=None, checkpointer=None):
             collected_ids = [int(key) for key in collected]
             # 否定回答记排除：答「没有」的症状不再追问
             ruled_out = dict(state.get("ruled_out_symptoms", {}))
-            if answered_polarity == "deny" and pending_q and pending_q.get("id") is not None:
+            if (
+                answered_verdict in ("deny", "contradict")
+                and pending_q
+                and pending_q.get("id") is not None
+            ):
                 pending_id = int(pending_q["id"])
                 ruled_out[str(pending_id)] = (
                     pending_q.get("name") or names.get(pending_id, "")

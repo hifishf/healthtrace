@@ -43,7 +43,7 @@ class RouteDecision(BaseModel):
 
 
 class SymptomExtraction(BaseModel):
-    """症状抽取结构化输出：症状列表 + 主体边界（self/other）。"""
+    """症状抽取结构化输出：症状列表 + 主体边界 + 追问回答判定。"""
 
     symptoms: list[str] = Field(
         default_factory=list,
@@ -52,6 +52,16 @@ class SymptomExtraction(BaseModel):
     subject: Literal["self", "other"] = Field(
         default="self",
         description="症状属于用户本人 self 还是他人 other（他人如 我爸爸/我妈/孩子/朋友）",
+    )
+    answer_verdict: Literal[
+        "affirm", "deny", "contradict", "unrelated", "unclear", "not_applicable"
+    ] = Field(
+        default="not_applicable",
+        description=(
+            "仅当上一轮是追问时判断用户回答：affirm 肯定 / deny 否定 / "
+            "contradict 方向相反（如问体重下降却答体重上升）/ unrelated 答非所问 / "
+            "unclear 无法判断；没有上一轮追问时填 not_applicable"
+        ),
     )
 
 

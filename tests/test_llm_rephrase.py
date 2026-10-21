@@ -51,6 +51,15 @@ def _fatigue_then_empty(text: str) -> SymptomExtraction:
     return SymptomExtraction(symptoms=[], subject="self")
 
 
+def _insomnia_then_loose_clothes(text: str) -> SymptomExtraction:
+    """首轮抽到失眠；「衣服都松了」由 LLM 判为对「体重下降」的肯定。"""
+    if "失眠" in text:
+        return SymptomExtraction(symptoms=["失眠"], subject="self")
+    if "衣服都松了" in text:
+        return SymptomExtraction(symptoms=[], subject="self", answer_verdict="affirm")
+    return SymptomExtraction(symptoms=[], subject="self")
+
+
 async def _drive(graph, config, initial_text: str, answers: list[str]) -> dict:
     """跑一遍：首次 invoke，然后按 interrupt 逐条 resume 直到结束。"""
     result = await graph.ainvoke(initial_triage_state(initial_text), config=config)
@@ -96,6 +105,22 @@ async def test_question_falls_back_to_template_when_llm_fails() -> None:
     question = result["__interrupt__"][0].value.get("question")
     assert "请问你最近有没有" in question
     assert "的情况？" in question
+
+
+async def test_llm_verdict_handles_semantic_answer_without_keywords() -> None:
+    """「衣服都松了」无关键词，但 LLM 判为肯定 → 回填待问的体重下降。"""
+    llm = _FakeLLM(_insomnia_then_loose_clothes)
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.checkpoint_database_url
+    ) as saver:
+        await saver.setup()
+        graph = build_triage_graph(llm=llm, checkpointer=saver)
+        config = {"configurable": {"thread_id": f"v-{uuid.uuid4().hex[:8]}"}}
+        result = await graph.ainvoke(initial_triage_state("我最近失眠"), config=config)
+        result = await graph.ainvoke(Command(resume="不会"), config=config)  # 否掉嗜睡
+        result = await graph.ainvoke(Command(resume="最近衣服都松了"), config=config)
+
+    assert "体重下降" in result["collected_symptoms"].values()
 
 
 async def test_advice_written_by_llm() -> None:

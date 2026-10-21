@@ -9,6 +9,7 @@ SYSTEM_PROMPT = """你是 HealthTrace 的症状抽取器。从用户这句话里
 规则：
 - symptoms：抽取症状的规范短名称，尽量接近医学通用说法（如 乏力/胸痛/头晕/心悸），不要带程度和数量；没提到症状就返回空列表。
 - subject：这些症状是用户本人（self）还是他人（other）。他人指“我爸/我妈/孩子/朋友/他/她”等第三方。
+- answer_verdict：仅当收到「上一轮追问」时判断回答类型（affirm 肯定/deny 否定/contradict 方向相反/unrelated 答非所问/unclear 无法判断）；没有追问时填 not_applicable。
 只输出结构化结果，不要额外解释。"""
 
 
@@ -45,29 +46,46 @@ def resolve_subject(text: str, llm_subject: str) -> str:
     return detect_subject(text) or llm_subject
 
 
-def build_system_prompt(portrait_summary: str | None = None) -> str:
-    """构造症状抽取的系统提示词；有画像摘要时追加到上下文里。"""
-    if not portrait_summary:
-        return SYSTEM_PROMPT
-    return (
-        f"{SYSTEM_PROMPT}\n\n用户健康画像：{portrait_summary}。"
-        "抽取症状时可参考，但不要因为画像就臆造症状。"
-    )
+def build_system_prompt(
+    portrait_summary: str | None = None,
+    pending_question: str | None = None,
+) -> str:
+    """构造症状抽取的系统提示词；有画像摘要/上一轮追问时追加到上下文里。"""
+    prompt = SYSTEM_PROMPT
+    if portrait_summary:
+        prompt += (
+            f"\n\n用户健康画像：{portrait_summary}。"
+            "抽取症状时可参考，但不要因为画像就臆造症状。"
+        )
+    if pending_question:
+        prompt += (
+            f"\n\n上一轮追问：{pending_question}\n"
+            "请判断用户这句话是对该追问的回答："
+            "affirm=肯定（有/是/会），deny=否定（没有/不会/不是），"
+            "contradict=方向相反（如问体重下降却答体重上升），"
+            "unrelated=答非所问，unclear=无法判断。"
+            "把结果填入 answer_verdict；同时照常抽取 symptoms。"
+        )
+    return prompt
 
 
 async def extract_symptoms(
     text: str,
     llm: BaseChatModel,
     portrait_summary: str | None = None,
+    pending_question: str | None = None,
 ) -> SymptomExtraction:
     """对一句话抽取症状 + 主体（LLM 结构化输出，主体经确定性兜底修正）。
 
-    portrait_summary 为画像一行摘要，注入系统提示词供 LLM 参考。
+    portrait_summary 为画像一行摘要；pending_question 为上一轮追问，
+    用于让 LLM 判定这句话是肯定/否定/相反/无关/不清楚。
     """
     runnable = llm.with_structured_output(SymptomExtraction, method="function_calling")
     result = await runnable.ainvoke(
         [
-            SystemMessage(content=build_system_prompt(portrait_summary)),
+            SystemMessage(
+                content=build_system_prompt(portrait_summary, pending_question)
+            ),
             HumanMessage(content=text),
         ]
     )
