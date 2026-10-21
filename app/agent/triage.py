@@ -162,7 +162,9 @@ def build_triage_graph(llm=None, checkpointer=None):
                 session, settings.default_user_id
             )
 
-        extraction = await extract_symptoms(text, llm)
+        extraction = await extract_symptoms(
+            text, llm, portrait_summary=portrait.summarize(loaded_portrait)
+        )
         red_flag = check_red_flag(text, extraction.subject)
 
         if red_flag.triggered:

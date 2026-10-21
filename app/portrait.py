@@ -30,6 +30,35 @@ async def get_health_portrait(session: AsyncSession, user_id: UUID) -> dict[str,
     }
 
 
+def summarize(portrait: dict[str, Any]) -> str:
+    """把画像 dict 压成一行中文摘要，供注入 LLM 上下文；无有效字段返回「暂无画像信息」。"""
+    parts: list[str] = []
+
+    sex = portrait.get("sex")
+    if sex:
+        parts.append(str(sex))
+
+    birth_year = portrait.get("birth_year")
+    if birth_year is not None:
+        parts.append(f"{birth_year}年生")
+
+    height_cm = portrait.get("height_cm")
+    if height_cm is not None:
+        parts.append(f"身高{height_cm}cm")
+
+    weight_kg = portrait.get("weight_kg")
+    if weight_kg is not None:
+        parts.append(f"体重{weight_kg}kg")
+
+    bmi = portrait.get("bmi")
+    if bmi is not None:
+        parts.append(f"BMI {float(bmi):.1f}")
+
+    if not parts:
+        return "暂无画像信息"
+    return "，".join(parts)
+
+
 async def touch_portrait(session: AsyncSession, user_id: UUID) -> None:
     """刷新画像 updated_at（表示画像最近一次被更新）。
 

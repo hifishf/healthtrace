@@ -45,11 +45,31 @@ def resolve_subject(text: str, llm_subject: str) -> str:
     return detect_subject(text) or llm_subject
 
 
-async def extract_symptoms(text: str, llm: BaseChatModel) -> SymptomExtraction:
-    """对一句话抽取症状 + 主体（LLM 结构化输出，主体经确定性兜底修正）。"""
+def build_system_prompt(portrait_summary: str | None = None) -> str:
+    """构造症状抽取的系统提示词；有画像摘要时追加到上下文里。"""
+    if not portrait_summary:
+        return SYSTEM_PROMPT
+    return (
+        f"{SYSTEM_PROMPT}\n\n用户健康画像：{portrait_summary}。"
+        "抽取症状时可参考，但不要因为画像就臆造症状。"
+    )
+
+
+async def extract_symptoms(
+    text: str,
+    llm: BaseChatModel,
+    portrait_summary: str | None = None,
+) -> SymptomExtraction:
+    """对一句话抽取症状 + 主体（LLM 结构化输出，主体经确定性兜底修正）。
+
+    portrait_summary 为画像一行摘要，注入系统提示词供 LLM 参考。
+    """
     runnable = llm.with_structured_output(SymptomExtraction, method="function_calling")
     result = await runnable.ainvoke(
-        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=text)]
+        [
+            SystemMessage(content=build_system_prompt(portrait_summary)),
+            HumanMessage(content=text),
+        ]
     )
     # 主体边界：确定性指代词优先，LLM 只是补充，避免“我爸爸胸痛”被误判成 self
     return result.model_copy(update={"subject": resolve_subject(text, result.subject)})
