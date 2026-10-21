@@ -147,24 +147,29 @@ async def select_followup_questions(
     session: AsyncSession,
     candidate_disease_ids: list[int],
     collected_symptom_ids: set[int],
+    ruled_out_symptom_ids: set[int] | None = None,
     k: int = 3,
 ) -> list[dict]:
     """从候选疾病集里选 top-k 个未采集症状作为下一轮追问。
 
     第 4 周：按 discrimination_weight desc 排序（第 3 周是 prevalence desc 占位），
-    权重相同时按 symptom.id 升序兜底保证确定性；已采集症状排除，不重复追问。
+    权重相同时按 symptom.id 升序兜底保证确定性；已采集症状与已排除症状都不再追问。
     返回 [{"id", "name", "discrimination_weight"}]，权重取该症状在候选疾病里的最大值。
     """
     if not candidate_disease_ids:
         return []
+
+    excluded_ids = set(collected_symptom_ids)
+    if ruled_out_symptom_ids:
+        excluded_ids |= set(ruled_out_symptom_ids)
 
     stmt = select(
         DiseaseSymptom.symptom_id, DiseaseSymptom.discrimination_weight
     ).where(
         DiseaseSymptom.disease_id.in_(candidate_disease_ids)
     )
-    if collected_symptom_ids:
-        stmt = stmt.where(DiseaseSymptom.symptom_id.notin_(collected_symptom_ids))
+    if excluded_ids:
+        stmt = stmt.where(DiseaseSymptom.symptom_id.notin_(excluded_ids))
     rows = (await session.execute(stmt)).all()
 
     best_weight: dict[int, int] = {}

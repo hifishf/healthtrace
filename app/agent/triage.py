@@ -31,6 +31,7 @@ class TriageState(TypedDict):
     messages: Annotated[list, add_messages]
     health_portrait: dict
     collected_symptoms: dict  # str(symptom_id) -> 症状名
+    ruled_out_symptoms: dict  # str(symptom_id) -> 症状名（已明确排除，不再追问）
     candidate_conditions: list  # [{"id", "name", "urgency_hint"}]
     followup_round: int
     red_flag_triggered: bool
@@ -59,6 +60,25 @@ _SUGGESTIONS: dict[str, str] = {
     "seek_care": "建议尽快到医院就诊，由医生进一步检查明确原因。",
 }
 
+# 追问回答的肯定/否定表面形式（确定性，不依赖 LLM；否定优先于肯定，
+# 因为“没有”里包含“有”，先判否定才不会被误判成肯定）
+_NEGATIVE_MARKERS: tuple[str, ...] = ("没有", "没", "无", "不是", "不会", "否")
+_AFFIRMATIVE_MARKERS: tuple[str, ...] = ("有", "是", "对", "嗯", "会", "出现过", "偶尔会")
+
+
+def answer_polarity(answer: str) -> str:
+    """判定追问回答的极性：affirm / deny / unknown（确定性，否定优先）。"""
+    value = (answer or "").strip()
+    if not value:
+        return "unknown"
+    for marker in _NEGATIVE_MARKERS:
+        if marker in value:
+            return "deny"
+    for marker in _AFFIRMATIVE_MARKERS:
+        if marker in value:
+            return "affirm"
+    return "unknown"
+
 
 def initial_triage_state(text: str) -> dict:
     """构造一次追问分诊的初始状态（单用户，无登录）。"""
@@ -66,6 +86,7 @@ def initial_triage_state(text: str) -> dict:
         "messages": [HumanMessage(content=text)],
         "health_portrait": {},
         "collected_symptoms": {},
+        "ruled_out_symptoms": {},
         "candidate_conditions": [],
         "followup_round": 0,
         "red_flag_triggered": False,
@@ -132,6 +153,9 @@ def build_triage_graph(llm=None, checkpointer=None):
     async def extract_node(state: TriageState) -> dict:
         """入口：加载画像 -> 抽症状 -> 红旗/主体边界 -> 归一化 -> 候选集 -> 选下一问。"""
         text = state["messages"][-1].content
+        # 上一轮追问（若本轮是对它的回答，需确定性回填/记排除）
+        pending_q = state.get("pending_question")
+        answered_polarity = answer_polarity(text) if pending_q else "unknown"
 
         async with async_session() as session:
             loaded_portrait = await portrait.get_health_portrait(
@@ -155,11 +179,24 @@ def build_triage_graph(llm=None, checkpointer=None):
 
         async with async_session() as session:
             symptom_ids = await match_symptoms(session, extraction.symptoms)
+            # 肯定回答回填：答「有」时 LLM 抽不到症状，直接用上一轮 pending 症状补上
+            if answered_polarity == "affirm" and pending_q and pending_q.get("id") is not None:
+                pending_id = int(pending_q["id"])
+                if pending_id not in symptom_ids:
+                    symptom_ids.append(pending_id)
             names = await get_symptom_names(session, symptom_ids)
             collected = dict(state["collected_symptoms"])
             for symptom_id in symptom_ids:
                 collected[str(symptom_id)] = names.get(symptom_id, "")
             collected_ids = [int(key) for key in collected]
+            # 否定回答记排除：答「没有」的症状不再追问
+            ruled_out = dict(state.get("ruled_out_symptoms", {}))
+            if answered_polarity == "deny" and pending_q and pending_q.get("id") is not None:
+                pending_id = int(pending_q["id"])
+                ruled_out[str(pending_id)] = (
+                    pending_q.get("name") or names.get(pending_id, "")
+                )
+            ruled_out_ids = [int(key) for key in ruled_out]
             candidates = await compute_candidates(session, collected_ids)
             # 已到追问硬上限：不再选下一问，避免最后一轮做无用的追问查询
             pending = []
@@ -168,6 +205,7 @@ def build_triage_graph(llm=None, checkpointer=None):
                     session,
                     [candidate.id for candidate in candidates],
                     set(collected_ids),
+                    ruled_out_symptom_ids=set(ruled_out_ids),
                     k=3,
                 )
 
@@ -183,6 +221,7 @@ def build_triage_graph(llm=None, checkpointer=None):
         return {
             "health_portrait": loaded_portrait,
             "collected_symptoms": collected,
+            "ruled_out_symptoms": ruled_out,
             "candidate_conditions": [
                 {
                     "id": c.id,
