@@ -19,6 +19,7 @@ from app.kb import (
     get_symptom_names,
     match_symptoms,
     select_followup_questions,
+    top_tier_size,
 )
 
 # 追问硬上限（状态机边条件，不依赖 LLM 自觉）
@@ -33,6 +34,8 @@ class TriageState(TypedDict):
     collected_symptoms: dict  # str(symptom_id) -> 症状名
     ruled_out_symptoms: dict  # str(symptom_id) -> 症状名（已明确排除，不再追问）
     candidate_conditions: list  # [{"id", "name", "urgency_hint"}]
+    candidate_count: int  # 候选疾病总数（并集基数）
+    top_tier_count: int  # 高置信档大小（命中数并列最高的候选个数）
     followup_round: int
     red_flag_triggered: bool
     final_advice: dict | None
@@ -88,6 +91,8 @@ def initial_triage_state(text: str) -> dict:
         "collected_symptoms": {},
         "ruled_out_symptoms": {},
         "candidate_conditions": [],
+        "candidate_count": 0,
+        "top_tier_count": 0,
         "followup_round": 0,
         "red_flag_triggered": False,
         "final_advice": None,
@@ -233,6 +238,8 @@ def build_triage_graph(llm=None, checkpointer=None):
                 }
                 for c in candidates
             ],
+            "candidate_count": len(candidates),
+            "top_tier_count": top_tier_size(candidates),
             "pending_question": next_question,
         }
 

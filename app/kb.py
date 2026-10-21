@@ -143,6 +143,18 @@ async def compute_candidates(
     return sorted(candidates, key=lambda c: (-c.hit_count, c.id))
 
 
+def top_tier_size(candidates: list[Candidate]) -> int:
+    """高置信档大小 = 命中数并列最高的候选个数；空集返回 0。
+
+    候选集是并集，基数不随追问收缩；真正收敛的是「命中数最高」这一档
+    （越多已采集症状同时命中的疾病越少），用它作为逐轮缩小的量化指标。
+    """
+    if not candidates:
+        return 0
+    max_hits = max(candidate.hit_count for candidate in candidates)
+    return sum(1 for candidate in candidates if candidate.hit_count == max_hits)
+
+
 async def select_followup_questions(
     session: AsyncSession,
     candidate_disease_ids: list[int],

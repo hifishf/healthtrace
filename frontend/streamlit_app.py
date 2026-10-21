@@ -64,14 +64,22 @@ if triage_sent and triage_text.strip():
         resp = requests.post(f"{API_BASE_URL}/triage", json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
+        stats = (
+            f"候选疾病 {data.get('candidate_count', 0)} 个"
+            f"（高置信档 {data.get('top_tier_count', 0)} 个）"
+        )
         if data.get("kind") == "question":
             st.session_state.triage_thread_id = data["thread_id"]
-            st.session_state.triage_messages.append(("assistant", data.get("question") or ""))
+            st.session_state.triage_messages.append(
+                ("assistant", f"{data.get('question') or ''}\n\n{stats}")
+            )
         else:
             advice = data.get("final_advice") or {}
             label = advice.get("label", "建议")
             suggestion = advice.get("suggestion", "")
-            st.session_state.triage_messages.append(("assistant", f"【{label}】{suggestion}"))
+            st.session_state.triage_messages.append(
+                ("assistant", f"【{label}】{suggestion}\n\n{stats}")
+            )
             st.session_state.triage_thread_id = None  # 本轮建议已给出，下次重新开始
     except requests.RequestException as exc:
         st.session_state.triage_messages.append(

@@ -84,3 +84,6 @@ class TriageResponse(BaseModel):
     question: str | None = None
     final_advice: dict | None = None
     red_flag_triggered: bool = False
+    candidate_count: int = 0
+    top_tier_count: int = 0
+    candidate_conditions: list[dict] = Field(default_factory=list)

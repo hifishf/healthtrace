@@ -131,11 +131,17 @@ async def triage(payload: TriageRequest, request: Request) -> TriageResponse:
 
     # 图挂起（interrupt）：返回追问问题，等下一轮 resume
     interrupts = result.get("__interrupt__")
+    candidate_conditions = result.get("candidate_conditions", [])
+    candidate_count = result.get("candidate_count", len(candidate_conditions))
+    top_tier_count = result.get("top_tier_count", 0)
     if interrupts:
         return TriageResponse(
             thread_id=thread_id,
             kind="question",
             question=interrupts[0].value.get("question"),
+            candidate_count=candidate_count,
+            top_tier_count=top_tier_count,
+            candidate_conditions=candidate_conditions,
         )
 
     return TriageResponse(
@@ -143,4 +149,7 @@ async def triage(payload: TriageRequest, request: Request) -> TriageResponse:
         kind="advice",
         final_advice=result.get("final_advice"),
         red_flag_triggered=result.get("red_flag_triggered", False),
+        candidate_count=candidate_count,
+        top_tier_count=top_tier_count,
+        candidate_conditions=candidate_conditions,
     )
