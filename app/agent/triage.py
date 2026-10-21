@@ -1,7 +1,7 @@
 """追问分诊子图：TriageState 状态机 + interrupt/Command 挂起-恢复 + 硬上限。"""
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
@@ -70,6 +70,18 @@ _SUGGESTIONS: dict[str, str] = {
     "seek_care": "建议尽快到医院就诊，由医生进一步检查明确原因。",
 }
 
+# LLM 只负责「怎么说」，不负责「怎么判断」：结论（级别/症状/候选）由确定性规则给出，
+# LLM 仅把结论转写成自然语言；失败时回退到模板，安全边界不受影响。
+_QUESTION_REPHRASE_SYSTEM = (
+    "你是 HealthTrace 的健康管家。请把待确认的症状改写成一句自然、温和的中文追问。"
+    "只输出这一句话，不要加引号，不要引入新的症状，不要给出诊断或医疗建议。"
+)
+_ADVICE_WRITE_SYSTEM = (
+    "你是 HealthTrace 的健康管家。根据给定的确定性分级和候选方向，写一句温和、清楚的中文建议。"
+    "必须遵守：不输出诊断结论（不说「你得了某病」），不推荐处方药，紧急时建议就医。"
+    "只输出建议这一句，不要加引号，不要改写给定级别。"
+)
+
 # 追问回答的肯定/否定表面形式（确定性，不依赖 LLM；否定优先于肯定，
 # 因为“没有”里包含“有”，先判否定才不会被误判成肯定）
 _NEGATIVE_MARKERS: tuple[str, ...] = ("没有", "没", "无", "不是", "不会", "否")
@@ -107,14 +119,58 @@ def initial_triage_state(text: str) -> dict:
     }
 
 
-def _build_advice(level: str, candidates: list[dict]) -> dict:
-    """由确定性级别组装 final_advice（LLM 转写在后续周接入）。"""
-    return {
-        "level": level,
-        "label": ADVICE_LEVELS[level],
-        "conditions": [candidate["name"] for candidate in candidates],
-        "suggestion": _SUGGESTIONS.get(level, "建议咨询医生进一步评估。"),
-    }
+def _question_template(name: str) -> str:
+    """追问的确定性模板（LLM 转写失败的降级兜底）。"""
+    return f"请问你最近有没有「{name}」的情况？"
+
+
+async def _rephrase_question(
+    llm,
+    name: str,
+    collected_names: list[str],
+    portrait_summary: str,
+) -> str:
+    """把选中的症状转写成自然语言追问；失败回退确定性模板。"""
+    fallback = _question_template(name)
+    try:
+        context = (
+            f"待确认症状：{name}\n"
+            f"已采集症状：{'、'.join(collected_names) if collected_names else '无'}\n"
+            f"健康画像：{portrait_summary or '暂无'}"
+        )
+        response = await llm.ainvoke(
+            [SystemMessage(content=_QUESTION_REPHRASE_SYSTEM), HumanMessage(content=context)]
+        )
+        text = (response.content or "").strip()
+        return text or fallback
+    except Exception:
+        return fallback
+
+
+async def _write_advice(
+    llm,
+    level: str,
+    label: str,
+    condition_names: list[str],
+    collected_names: list[str],
+    portrait_summary: str,
+) -> str:
+    """把确定性分级转写成自然语言建议；失败回退该级别的模板。"""
+    fallback = _SUGGESTIONS.get(level, "建议咨询医生进一步评估。")
+    try:
+        context = (
+            f"建议级别：{label}（{level}）\n"
+            f"候选方向：{'、'.join(condition_names) if condition_names else '无'}\n"
+            f"已采集症状：{'、'.join(collected_names) if collected_names else '无'}\n"
+            f"健康画像：{portrait_summary or '暂无'}"
+        )
+        response = await llm.ainvoke(
+            [SystemMessage(content=_ADVICE_WRITE_SYSTEM), HumanMessage(content=context)]
+        )
+        text = (response.content or "").strip()
+        return text or fallback
+    except Exception:
+        return fallback
 
 
 def route_after_extract(state: TriageState) -> str:
@@ -144,19 +200,6 @@ def ask_node(state: TriageState) -> dict:
     }
 
 
-def advise_node(state: TriageState) -> dict:
-    """生成最终分级建议（红旗/他人已在 extract 里定好，这里只补软建议）。"""
-    if state.get("final_advice") is not None:
-        return {}
-    # 未识别到症状：不给健康建议，提示重新描述
-    if not state.get("collected_symptoms") or not state.get("candidate_conditions"):
-        return {"final_advice": _NO_SYMPTOM_ADVICE}
-    level = classify_advice_level_by_hints(
-        [candidate.get("urgency_hint") for candidate in state["candidate_conditions"]]
-    )
-    return {"final_advice": _build_advice(level, state["candidate_conditions"])}
-
-
 def build_triage_graph(llm=None, checkpointer=None):
     """构建追问分诊子图（extract -> ask(interrupt) 循环 -> advise）。
 
@@ -164,6 +207,34 @@ def build_triage_graph(llm=None, checkpointer=None):
     """
     if llm is None:
         llm = get_llm()
+
+    async def advise_node(state: TriageState) -> dict:
+        """生成最终分级建议：级别由确定性规则算，措辞由 LLM 转写（失败回退模板）。"""
+        if state.get("final_advice") is not None:
+            return {}
+        # 未识别到症状：不给健康建议，提示重新描述
+        if not state.get("collected_symptoms") or not state.get("candidate_conditions"):
+            return {"final_advice": _NO_SYMPTOM_ADVICE}
+        level = classify_advice_level_by_hints(
+            [candidate.get("urgency_hint") for candidate in state["candidate_conditions"]]
+        )
+        candidates = state["candidate_conditions"]
+        suggestion = await _write_advice(
+            llm,
+            level,
+            ADVICE_LEVELS[level],
+            [candidate["name"] for candidate in candidates],
+            list(state["collected_symptoms"].values()),
+            portrait.summarize(state.get("health_portrait") or {}),
+        )
+        return {
+            "final_advice": {
+                "level": level,
+                "label": ADVICE_LEVELS[level],
+                "conditions": [candidate["name"] for candidate in candidates],
+                "suggestion": suggestion,
+            }
+        }
 
     async def extract_node(state: TriageState) -> dict:
         """入口：加载画像 -> 抽症状 -> 红旗/主体边界 -> 归一化 -> 候选集 -> 选下一问。"""
@@ -229,10 +300,16 @@ def build_triage_graph(llm=None, checkpointer=None):
         next_question = None
         if pending:
             name = pending[0]["name"]
+            question_text = await _rephrase_question(
+                llm,
+                name,
+                list(collected.values()),
+                portrait.summarize(loaded_portrait),
+            )
             next_question = {
                 "id": pending[0]["id"],
                 "name": name,
-                "text": f"请问你最近有没有「{name}」的情况？",
+                "text": question_text,
             }
 
         return {
