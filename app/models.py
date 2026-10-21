@@ -8,6 +8,7 @@ from sqlalchemy import (
     TIMESTAMP,
     Computed,
     Date,
+    ForeignKey,
     Integer,
     Numeric,
     String,
@@ -75,3 +76,26 @@ class Symptom(Base):
     name: Mapped[str] = mapped_column(String(100), unique=True)
     synonyms: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
     category: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+
+class Disease(Base):
+    """知识库疾病（候选疾病集，name 唯一；urgency_hint 决定分级建议）。"""
+
+    __tablename__ = "diseases"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    department: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    urgency_hint: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+
+class DiseaseSymptom(Base):
+    """疾病-症状关联（候选集反查 + 鉴别价值追问）。"""
+
+    __tablename__ = "disease_symptoms"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    disease_id: Mapped[int] = mapped_column(Integer, ForeignKey("diseases.id"))
+    symptom_id: Mapped[int] = mapped_column(Integer, ForeignKey("symptoms.id"))
+    prevalence: Mapped[Decimal | None] = mapped_column(Numeric, nullable=True)
+    discrimination_weight: Mapped[int | None] = mapped_column(Integer, nullable=True)
