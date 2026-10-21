@@ -1,4 +1,4 @@
-"""Streamlit 界面：指标表单（第 1 周）+ 对话式记录（第 2 周，SSE 流式）。"""
+"""Streamlit 界面：指标表单 + 对话式记录 + 追问分诊（第 1~3 周）。"""
 import datetime
 import json
 import os
@@ -11,7 +11,7 @@ API_BASE_URL = os.getenv("HEALTHTRACE_API_URL", "http://127.0.0.1:8000")
 
 st.set_page_config(page_title="HealthTrace", layout="centered")
 st.title("HealthTrace")
-st.caption("指标表单（第 1 周）+ 对话式记录（第 2 周，SSE 流式）")
+st.caption("指标表单（第 1 周）+ 对话式记录（第 2 周）+ 追问分诊（第 3 周）")
 
 # ===== 第 1 周：指标表单 =====
 with st.form("metric_form", clear_on_submit=False):
@@ -35,6 +35,49 @@ if submitted:
         st.success(f"已记录：{metric_code} = {value} {unit}（id={data['id']}）")
     except requests.RequestException as exc:
         st.error(f"提交失败（请确认 FastAPI 已在 8000 端口启动）：{exc}")
+
+
+# ===== 第 3 周：追问分诊（多轮）=====
+st.divider()
+st.subheader("追问分诊")
+st.caption("描述症状，系统最多追问 3 轮后给出分级建议；试试：最近总是累 / 胸口疼得喘不上气 / 我爸爸胸痛")
+
+if "triage_thread_id" not in st.session_state:
+    st.session_state.triage_thread_id = None
+if "triage_messages" not in st.session_state:
+    st.session_state.triage_messages = []
+
+for role, content in st.session_state.triage_messages:
+    st.chat_message(role).write(content)
+
+with st.form("triage_form", clear_on_submit=True):
+    triage_text = st.text_input("症状描述 / 回答追问")
+    triage_sent = st.form_submit_button("发送")
+
+if triage_sent and triage_text.strip():
+    user_text = triage_text.strip()
+    st.session_state.triage_messages.append(("user", user_text))
+    payload = {"text": user_text}
+    if st.session_state.triage_thread_id:
+        payload["thread_id"] = st.session_state.triage_thread_id
+    try:
+        resp = requests.post(f"{API_BASE_URL}/triage", json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("kind") == "question":
+            st.session_state.triage_thread_id = data["thread_id"]
+            st.session_state.triage_messages.append(("assistant", data.get("question") or ""))
+        else:
+            advice = data.get("final_advice") or {}
+            label = advice.get("label", "建议")
+            suggestion = advice.get("suggestion", "")
+            st.session_state.triage_messages.append(("assistant", f"【{label}】{suggestion}"))
+            st.session_state.triage_thread_id = None  # 本轮建议已给出，下次重新开始
+    except requests.RequestException as exc:
+        st.session_state.triage_messages.append(
+            ("assistant", f"请求失败（请确认 FastAPI 已在 8000 端口启动）：{exc}")
+        )
+    st.rerun()
 
 
 # ===== 第 2 周：对话式记录（SSE 流式）=====

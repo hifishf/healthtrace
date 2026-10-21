@@ -67,3 +67,20 @@ class ChatResponse(BaseModel):
     intent: str
     confidence: float
     reply: str
+
+
+class TriageRequest(BaseModel):
+    """POST /triage 请求体：症状描述 + 可选 thread_id（多轮续跑用）。"""
+
+    text: str = Field(min_length=1)
+    thread_id: str | None = None
+
+
+class TriageResponse(BaseModel):
+    """POST /triage 响应：本轮返回追问问题，或返回最终分级建议。"""
+
+    thread_id: str
+    kind: Literal["question", "advice"]
+    question: str | None = None
+    final_advice: dict | None = None
+    red_flag_triggered: bool = False

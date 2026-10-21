@@ -1,7 +1,11 @@
 """FastAPI 应用入口。"""
-from fastapi import Depends, FastAPI
+from contextlib import asynccontextmanager
+from uuid import uuid4
+
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import crud
@@ -9,12 +13,30 @@ from app.agent.chat import build_chat_graph
 from app.agent.graph import build_agent_graph
 from app.agent.llm import get_llm
 from app.agent.stream import chat_event_stream
+from app.agent.triage import build_triage_graph, initial_triage_state
+from app.checkpoint import open_checkpointer
 from app.config import settings
 from app.db import async_session
 from app.observability import get_tracer, init_observability
-from app.schemas import ChatRequest, ChatResponse, MetricCreate, MetricResponse
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    MetricCreate,
+    MetricResponse,
+    TriageRequest,
+    TriageResponse,
+)
 
-app = FastAPI(title="HealthTrace API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期：打开 Postgres checkpointer 并构建追问分诊图（interrupt 依赖它）。"""
+    async with open_checkpointer() as saver:
+        app.state.triage_graph = build_triage_graph(llm=get_llm(), checkpointer=saver)
+        yield
+
+
+app = FastAPI(title="HealthTrace API", version="0.1.0", lifespan=lifespan)
 
 init_observability()
 tracer = get_tracer()
@@ -89,4 +111,36 @@ async def chat_stream(payload: ChatRequest) -> StreamingResponse:
     return StreamingResponse(
         chat_event_stream(payload.text, router_llm, chat_graph),
         media_type="text/event-stream",
+    )
+
+
+@app.post("/triage", response_model=TriageResponse)
+async def triage(payload: TriageRequest, request: Request) -> TriageResponse:
+    """追问分诊入口：首次调用启动会话；带 thread_id 的调用用 Command(resume) 续跑。"""
+    graph = request.app.state.triage_graph
+    thread_id = payload.thread_id or str(uuid4())
+    config = {"configurable": {"thread_id": thread_id}}
+
+    with tracer.start_as_current_span("triage") as root_span:
+        root_span.set_attribute("langfuse.trace.name", "追问分诊")
+        root_span.set_attribute("langfuse.user.id", str(settings.default_user_id))
+        if payload.thread_id is None:
+            result = await graph.ainvoke(initial_triage_state(payload.text), config=config)
+        else:
+            result = await graph.ainvoke(Command(resume=payload.text), config=config)
+
+    # 图挂起（interrupt）：返回追问问题，等下一轮 resume
+    interrupts = result.get("__interrupt__")
+    if interrupts:
+        return TriageResponse(
+            thread_id=thread_id,
+            kind="question",
+            question=interrupts[0].value.get("question"),
+        )
+
+    return TriageResponse(
+        thread_id=thread_id,
+        kind="advice",
+        final_advice=result.get("final_advice"),
+        red_flag_triggered=result.get("red_flag_triggered", False),
     )
