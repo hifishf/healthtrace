@@ -4,7 +4,7 @@ from sqlalchemy import select
 from app.db import async_session
 from app.kb import (
     _match_one,
-    classify_advice_level,
+    classify_advice_level_by_hints,
     compute_candidates,
     match_symptoms,
     select_followup_questions,
@@ -60,27 +60,36 @@ async def test_match_one_exact_name_first() -> None:
     assert _match_one("乏力", symptoms) == fatigue
 
 
-async def test_compute_candidates_intersection_narrows() -> None:
-    """候选集 = 已采集症状的交集：叠加嗜睡后从 乏力 的候选集里收窄。"""
+async def test_compute_candidates_union_orders_by_match_count() -> None:
+    """候选集 = 并集，按命中症状数降序：同时命中乏力+嗜睡的 4 个疾病排最前。"""
     fatigue = await _symptom_id("乏力")
     sleepy = await _symptom_id("嗜睡")
 
     async with async_session() as session:
-        initial = await compute_candidates(session, [fatigue])
-        narrowed = await compute_candidates(session, [fatigue, sleepy])
+        candidates = await compute_candidates(session, [fatigue, sleepy])
 
-    initial_names = {disease.name for disease in initial}
-    narrowed_names = {disease.name for disease in narrowed}
-
-    assert "慢性疲劳综合征" in initial_names
-    assert len(initial) >= 4
-    assert narrowed_names == {
+    names = [disease.name for disease in candidates]
+    assert set(names[:4]) == {
         "慢性疲劳综合征",
         "甲状腺功能减退",
         "阻塞性睡眠呼吸暂停",
         "2型糖尿病",
     }
-    assert narrowed_names < initial_names  # 真子集，确实收窄
+    assert len(candidates) == 8  # 乏力关联 8 个疾病，嗜睡是其中 4 个的子集
+
+
+async def test_compute_candidates_no_overlap_still_non_empty() -> None:
+    """乏力 + 腹泻 无交集时，仍返回并集（不塌成空）。"""
+    fatigue = await _symptom_id("乏力")
+    diarrhea = await _symptom_id("腹泻")
+
+    async with async_session() as session:
+        candidates = await compute_candidates(session, [fatigue, diarrhea])
+
+    names = {disease.name for disease in candidates}
+    assert len(candidates) > 0
+    assert "慢性疲劳综合征" in names  # 乏力侧
+    assert "肠易激综合征" in names     # 腹泻侧
 
 
 async def test_compute_candidates_empty_for_no_symptoms() -> None:
@@ -89,30 +98,16 @@ async def test_compute_candidates_empty_for_no_symptoms() -> None:
         assert await compute_candidates(session, []) == []
 
 
-async def test_classify_advice_level_max_severity() -> None:
-    """乏力+嗜睡 候选里最高级别是 online_consult。"""
-    fatigue = await _symptom_id("乏力")
-    sleepy = await _symptom_id("嗜睡")
-
-    async with async_session() as session:
-        candidates = await compute_candidates(session, [fatigue, sleepy])
-
-    assert classify_advice_level(candidates) == "online_consult"
+def test_classify_advice_level_by_hints_max_severity() -> None:
+    """多个 urgency_hint 取最高级。"""
+    assert classify_advice_level_by_hints(["observe", "adjust", "online_consult"]) == "online_consult"
+    assert classify_advice_level_by_hints(["observe", "seek_care", "adjust"]) == "seek_care"
 
 
-async def test_classify_advice_level_seek_care() -> None:
-    """胸痛候选包含心梗/肺栓塞等，应给出最高级 seek_care。"""
-    chest = await _symptom_id("胸痛")
-
-    async with async_session() as session:
-        candidates = await compute_candidates(session, [chest])
-
-    assert classify_advice_level(candidates) == "seek_care"
-
-
-def test_classify_advice_level_defaults_observe() -> None:
-    """空候选集默认 observe。"""
-    assert classify_advice_level([]) == "observe"
+def test_classify_advice_level_by_hints_defaults_observe() -> None:
+    """无有效 urgency_hint 默认 observe。"""
+    assert classify_advice_level_by_hints([]) == "observe"
+    assert classify_advice_level_by_hints(["bogus"]) == "observe"
 
 
 async def test_select_followup_questions_excludes_collected_and_orders() -> None:

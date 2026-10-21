@@ -81,34 +81,38 @@ async def compute_candidates(
     session: AsyncSession,
     symptom_ids: list[int],
 ) -> list[Disease]:
-    """候选疾病集 = 同时关联所有已采集症状的疾病（交集，逐轮收窄）。
+    """候选疾病集 = 匹配任一已采集症状的疾病，按命中症状数降序、id 升序排列。
 
-    首轮只有 1 个症状时返回该症状关联的全部疾病（初始候选集）；
-    后续轮叠加新症状后取交集，候选集随之收窄。无已采集症状时返回空列表。
+    不用严格交集：交集一旦为空，会把「确实不舒服但症状不属于同一疾病」的患者
+    错误判成无候选。改用并集 + 命中数排序，候选集永不塌空，命中越多越靠前。
+    无已采集症状时返回空列表。
     """
     if not symptom_ids:
         return []
 
-    disease_id_sets: list[set[int]] = []
-    for symptom_id in symptom_ids:
-        rows = (
-            await session.execute(
-                select(DiseaseSymptom.disease_id).where(
-                    DiseaseSymptom.symptom_id == symptom_id
-                )
+    rows = (
+        await session.execute(
+            select(DiseaseSymptom.disease_id, DiseaseSymptom.symptom_id).where(
+                DiseaseSymptom.symptom_id.in_(symptom_ids)
             )
-        ).scalars().all()
-        disease_id_sets.append(set(rows))
+        )
+    ).all()
 
-    common_ids = set.intersection(*disease_id_sets)
-    if not common_ids:
+    match_count: dict[int, int] = {}
+    for disease_id, symptom_id in rows:
+        match_count[disease_id] = match_count.get(disease_id, 0) + 1
+
+    if not match_count:
         return []
 
-    return (
+    diseases = (
         await session.execute(
-            select(Disease).where(Disease.id.in_(common_ids)).order_by(Disease.id)
+            select(Disease).where(Disease.id.in_(match_count.keys()))
         )
     ).scalars().all()
+
+    # 命中症状数多的排前，id 升序兜底保证确定性
+    return sorted(diseases, key=lambda d: (-match_count[d.id], d.id))
 
 
 async def select_followup_questions(
@@ -152,11 +156,6 @@ async def select_followup_questions(
         {"id": sid, "name": name_by_id[sid], "prevalence": best_prevalence[sid]}
         for sid in top_ids
     ]
-
-
-def classify_advice_level(diseases: list[Disease]) -> str:
-    """分级建议：取候选疾病的最高 urgency_hint；无候选时默认 observe。"""
-    return classify_advice_level_by_hints([d.urgency_hint for d in diseases])
 
 
 def classify_advice_level_by_hints(urgency_hints: list[str]) -> str:
