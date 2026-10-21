@@ -64,6 +64,19 @@ async def match_symptoms(
     return matched
 
 
+async def get_symptom_names(
+    session: AsyncSession,
+    symptom_ids: list[int],
+) -> dict[int, str]:
+    """按 id 批量取症状名，返回 {id: name}。"""
+    if not symptom_ids:
+        return {}
+    symptoms = (
+        await session.execute(select(Symptom).where(Symptom.id.in_(symptom_ids)))
+    ).scalars().all()
+    return {symptom.id: symptom.name for symptom in symptoms}
+
+
 async def compute_candidates(
     session: AsyncSession,
     symptom_ids: list[int],
@@ -143,9 +156,12 @@ async def select_followup_questions(
 
 def classify_advice_level(diseases: list[Disease]) -> str:
     """分级建议：取候选疾病的最高 urgency_hint；无候选时默认 observe。"""
-    if not diseases:
+    return classify_advice_level_by_hints([d.urgency_hint for d in diseases])
+
+
+def classify_advice_level_by_hints(urgency_hints: list[str]) -> str:
+    """按 urgency_hint 列表取最高级；无有效值默认 observe。"""
+    valid = [hint for hint in urgency_hints if hint in _ADVICE_SEVERITY]
+    if not valid:
         return "observe"
-    levels = [d.urgency_hint for d in diseases if d.urgency_hint in _ADVICE_SEVERITY]
-    if not levels:
-        return "observe"
-    return max(levels, key=lambda level: _ADVICE_SEVERITY[level])
+    return max(valid, key=lambda hint: _ADVICE_SEVERITY[hint])
