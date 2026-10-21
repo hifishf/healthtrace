@@ -56,6 +56,13 @@ _ACCOMPANY_ADVICE: dict = {
     "suggestion": "这是他人的症状，无法代替本人分诊，建议陪同就医。",
 }
 
+_NO_SYMPTOM_ADVICE: dict = {
+    "level": "no_symptom",
+    "label": "未识别到症状",
+    "conditions": [],
+    "suggestion": "我没听出你具体哪里不舒服，请再描述一下症状（比如：最近总是累、胸口疼）。",
+}
+
 _SUGGESTIONS: dict[str, str] = {
     "observe": "根据你描述的症状，目前倾向先观察休息并注意变化，如症状加重请及时就医。",
     "adjust": "建议先调整生活方式（规律作息、均衡饮食、适量运动），观察症状是否缓解。",
@@ -141,6 +148,9 @@ def advise_node(state: TriageState) -> dict:
     """生成最终分级建议（红旗/他人已在 extract 里定好，这里只补软建议）。"""
     if state.get("final_advice") is not None:
         return {}
+    # 未识别到症状：不给健康建议，提示重新描述
+    if not state.get("collected_symptoms") or not state.get("candidate_conditions"):
+        return {"final_advice": _NO_SYMPTOM_ADVICE}
     level = classify_advice_level_by_hints(
         [candidate.get("urgency_hint") for candidate in state["candidate_conditions"]]
     )

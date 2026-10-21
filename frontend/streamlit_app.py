@@ -95,8 +95,11 @@ if triage_sent and triage_text.strip():
             advice = data.get("final_advice") or {}
             label = advice.get("label", "建议")
             suggestion = advice.get("suggestion", "")
+            message = f"【{label}】{suggestion}"
+            if advice.get("level") != "no_symptom":
+                message += "\n\n（本轮已结束，可继续描述新的症状开始新一轮）"
             st.session_state.triage_messages.append(
-                ("assistant", f"【{label}】{suggestion}")
+                ("assistant", message)
             )
             st.session_state.triage_thread_id = None  # 本轮建议已给出，下次重新开始
     except requests.RequestException as exc:

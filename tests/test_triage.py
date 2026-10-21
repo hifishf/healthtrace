@@ -105,3 +105,21 @@ async def test_other_subject_accompany_not_red_flag() -> None:
     assert result["final_advice"]["level"] == "accompany"
     assert "陪同就医" in result["final_advice"]["suggestion"]
     assert "__interrupt__" not in result
+
+
+async def test_no_symptom_input_prompts_to_describe() -> None:
+    """无症状输入不返回【观察】，而是提示重新描述。"""
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.checkpoint_database_url
+    ) as saver:
+        await saver.setup()
+        graph = build_triage_graph(
+            llm=_FakeLLM(lambda text: SymptomExtraction(symptoms=[], subject="self")),
+            checkpointer=saver,
+        )
+        config = {"configurable": {"thread_id": f"nosym-{uuid.uuid4().hex[:8]}"}}
+        result = await graph.ainvoke(initial_triage_state("你好"), config=config)
+
+    assert result["final_advice"]["level"] == "no_symptom"
+    assert "观察" not in result["final_advice"]["suggestion"]
+    assert "__interrupt__" not in result
