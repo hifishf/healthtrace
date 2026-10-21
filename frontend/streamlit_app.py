@@ -46,9 +46,25 @@ if "triage_thread_id" not in st.session_state:
     st.session_state.triage_thread_id = None
 if "triage_messages" not in st.session_state:
     st.session_state.triage_messages = []
+if "triage_metrics" not in st.session_state:
+    st.session_state.triage_metrics = None
 
 for role, content in st.session_state.triage_messages:
     st.chat_message(role).write(content)
+
+# 开发者指标（不进病人对话，单独折叠显示，用于演示候选集逐轮收敛）
+with st.expander("开发者指标：候选集收敛", expanded=False):
+    metrics = st.session_state.triage_metrics
+    if not metrics:
+        st.caption("暂无。发送一次症状描述后，这里显示候选集逐轮收敛情况。")
+    else:
+        col1, col2 = st.columns(2)
+        col1.metric("候选疾病总数", metrics["candidate_count"])
+        col2.metric("高置信档", metrics["top_tier_count"])
+        if metrics["top"]:
+            st.write("命中数最高的候选：")
+            for name, hits in metrics["top"]:
+                st.write(f"- {name}（命中 {hits} 个症状）")
 
 with st.form("triage_form", clear_on_submit=True):
     triage_text = st.text_input("症状描述 / 回答追问")
@@ -64,21 +80,23 @@ if triage_sent and triage_text.strip():
         resp = requests.post(f"{API_BASE_URL}/triage", json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
-        stats = (
-            f"候选疾病 {data.get('candidate_count', 0)} 个"
-            f"（高置信档 {data.get('top_tier_count', 0)} 个）"
-        )
+        candidates = data.get("candidate_conditions") or []
+        st.session_state.triage_metrics = {
+            "candidate_count": data.get("candidate_count", 0),
+            "top_tier_count": data.get("top_tier_count", 0),
+            "top": [(c.get("name"), c.get("hit_count")) for c in candidates[:3]],
+        }
         if data.get("kind") == "question":
             st.session_state.triage_thread_id = data["thread_id"]
             st.session_state.triage_messages.append(
-                ("assistant", f"{data.get('question') or ''}\n\n{stats}")
+                ("assistant", data.get("question") or "")
             )
         else:
             advice = data.get("final_advice") or {}
             label = advice.get("label", "建议")
             suggestion = advice.get("suggestion", "")
             st.session_state.triage_messages.append(
-                ("assistant", f"【{label}】{suggestion}\n\n{stats}")
+                ("assistant", f"【{label}】{suggestion}")
             )
             st.session_state.triage_thread_id = None  # 本轮建议已给出，下次重新开始
     except requests.RequestException as exc:
