@@ -161,12 +161,15 @@ def build_triage_graph(llm=None, checkpointer=None):
                 collected[str(symptom_id)] = names.get(symptom_id, "")
             collected_ids = [int(key) for key in collected]
             candidates = await compute_candidates(session, collected_ids)
-            pending = await select_followup_questions(
-                session,
-                [disease.id for disease in candidates],
-                set(collected_ids),
-                k=1,
-            )
+            # 已到追问硬上限：不再选下一问，避免最后一轮做无用的追问查询
+            pending = []
+            if state["followup_round"] < MAX_FOLLOWUP_ROUNDS:
+                pending = await select_followup_questions(
+                    session,
+                    [disease.id for disease in candidates],
+                    set(collected_ids),
+                    k=1,
+                )
 
         next_question = None
         if pending:
