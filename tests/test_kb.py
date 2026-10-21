@@ -68,7 +68,7 @@ async def test_compute_candidates_union_orders_by_match_count() -> None:
     async with async_session() as session:
         candidates = await compute_candidates(session, [fatigue, sleepy])
 
-    names = [disease.name for disease in candidates]
+    names = [candidate.name for candidate in candidates]
     assert set(names[:4]) == {
         "慢性疲劳综合征",
         "甲状腺功能减退",
@@ -86,7 +86,7 @@ async def test_compute_candidates_no_overlap_still_non_empty() -> None:
     async with async_session() as session:
         candidates = await compute_candidates(session, [fatigue, diarrhea])
 
-    names = {disease.name for disease in candidates}
+    names = {candidate.name for candidate in candidates}
     assert len(candidates) > 0
     assert "慢性疲劳综合征" in names  # 乏力侧
     assert "肠易激综合征" in names     # 腹泻侧
@@ -96,6 +96,19 @@ async def test_compute_candidates_empty_for_no_symptoms() -> None:
     """无已采集症状 -> 空候选集。"""
     async with async_session() as session:
         assert await compute_candidates(session, []) == []
+
+
+async def test_compute_candidates_exposes_hit_count() -> None:
+    """候选集暴露 hit_count：乏力+嗜睡 命中数 2 的 4 个疾病排最前。"""
+    fatigue = await _symptom_id("乏力")
+    sleepy = await _symptom_id("嗜睡")
+
+    async with async_session() as session:
+        candidates = await compute_candidates(session, [fatigue, sleepy])
+
+    assert [candidate.hit_count for candidate in candidates[:4]] == [2, 2, 2, 2]
+    assert candidates[0].hit_count == 2
+    assert all(candidate.hit_count <= 2 for candidate in candidates)
 
 
 def test_classify_advice_level_by_hints_max_severity() -> None:
@@ -111,7 +124,7 @@ def test_classify_advice_level_by_hints_defaults_observe() -> None:
 
 
 async def test_select_followup_questions_excludes_collected_and_orders() -> None:
-    """追问排除已采集症状，并按 prevalence desc 确定性排序。"""
+    """追问排除已采集症状，并按 discrimination_weight desc 确定性排序。"""
     fatigue = await _symptom_id("乏力")
     sleepy = await _symptom_id("嗜睡")
 
@@ -119,7 +132,7 @@ async def test_select_followup_questions_excludes_collected_and_orders() -> None
         candidates = await compute_candidates(session, [fatigue, sleepy])
         questions = await select_followup_questions(
             session,
-            [disease.id for disease in candidates],
+            [candidate.id for candidate in candidates],
             {fatigue, sleepy},
             k=3,
         )
@@ -129,5 +142,6 @@ async def test_select_followup_questions_excludes_collected_and_orders() -> None
     assert fatigue not in returned_ids
     assert sleepy not in returned_ids
 
-    prevalences = [question["prevalence"] for question in questions]
-    assert prevalences == sorted(prevalences, reverse=True)
+    weights = [question["discrimination_weight"] for question in questions]
+    assert weights == sorted(weights, reverse=True)
+    assert all(1 <= weight <= 5 for weight in weights)

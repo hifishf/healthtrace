@@ -166,9 +166,9 @@ def build_triage_graph(llm=None, checkpointer=None):
             if state["followup_round"] < MAX_FOLLOWUP_ROUNDS:
                 pending = await select_followup_questions(
                     session,
-                    [disease.id for disease in candidates],
+                    [candidate.id for candidate in candidates],
                     set(collected_ids),
-                    k=1,
+                    k=3,
                 )
 
         next_question = None
@@ -184,8 +184,13 @@ def build_triage_graph(llm=None, checkpointer=None):
             "health_portrait": loaded_portrait,
             "collected_symptoms": collected,
             "candidate_conditions": [
-                {"id": d.id, "name": d.name, "urgency_hint": d.urgency_hint}
-                for d in candidates
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "urgency_hint": c.urgency_hint,
+                    "hit_count": c.hit_count,
+                }
+                for c in candidates
             ],
             "pending_question": next_question,
         }

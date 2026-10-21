@@ -1,4 +1,6 @@
 """知识库确定性访问：症状匹配 / 候选集计算 / 追问选择 / 分级建议。"""
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +20,21 @@ _ADVICE_SEVERITY: dict[str, int] = {
     "online_consult": 3,
     "seek_care": 4,
 }
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """候选疾病：疾病基础信息 + 命中已采集症状数。
+
+    hit_count 是「候选集逐轮缩小可量化」的依据：并集基数不收缩，
+    真正收敛的是命中数最高的高置信档（hit_count 并列最高者逐轮变少）。
+    """
+
+    id: int
+    name: str
+    department: str | None
+    urgency_hint: str | None
+    hit_count: int
 
 
 def _match_one(text: str, symptoms: list[Symptom]) -> int | None:
@@ -80,7 +97,7 @@ async def get_symptom_names(
 async def compute_candidates(
     session: AsyncSession,
     symptom_ids: list[int],
-) -> list[Disease]:
+) -> list[Candidate]:
     """候选疾病集 = 匹配任一已采集症状的疾病，按命中症状数降序、id 升序排列。
 
     不用严格交集：交集一旦为空，会把「确实不舒服但症状不属于同一疾病」的患者
@@ -99,7 +116,7 @@ async def compute_candidates(
     ).all()
 
     match_count: dict[int, int] = {}
-    for disease_id, symptom_id in rows:
+    for disease_id, _symptom_id in rows:
         match_count[disease_id] = match_count.get(disease_id, 0) + 1
 
     if not match_count:
@@ -110,9 +127,20 @@ async def compute_candidates(
             select(Disease).where(Disease.id.in_(match_count.keys()))
         )
     ).scalars().all()
+    disease_by_id = {disease.id: disease for disease in diseases}
 
     # 命中症状数多的排前，id 升序兜底保证确定性
-    return sorted(diseases, key=lambda d: (-match_count[d.id], d.id))
+    candidates = [
+        Candidate(
+            id=disease_id,
+            name=disease_by_id[disease_id].name,
+            department=disease_by_id[disease_id].department,
+            urgency_hint=disease_by_id[disease_id].urgency_hint,
+            hit_count=match_count[disease_id],
+        )
+        for disease_id in match_count
+    ]
+    return sorted(candidates, key=lambda c: (-c.hit_count, c.id))
 
 
 async def select_followup_questions(
@@ -123,27 +151,30 @@ async def select_followup_questions(
 ) -> list[dict]:
     """从候选疾病集里选 top-k 个未采集症状作为下一轮追问。
 
-    第 3 周占位：按 prevalence desc 排序（discrimination_weight 排序第 4 周上）。
-    返回 [{"id", "name", "prevalence"}]，prevalence 取该症状在候选疾病里的最大值。
+    第 4 周：按 discrimination_weight desc 排序（第 3 周是 prevalence desc 占位），
+    权重相同时按 symptom.id 升序兜底保证确定性；已采集症状排除，不重复追问。
+    返回 [{"id", "name", "discrimination_weight"}]，权重取该症状在候选疾病里的最大值。
     """
     if not candidate_disease_ids:
         return []
 
-    stmt = select(DiseaseSymptom.symptom_id, DiseaseSymptom.prevalence).where(
+    stmt = select(
+        DiseaseSymptom.symptom_id, DiseaseSymptom.discrimination_weight
+    ).where(
         DiseaseSymptom.disease_id.in_(candidate_disease_ids)
     )
     if collected_symptom_ids:
         stmt = stmt.where(DiseaseSymptom.symptom_id.notin_(collected_symptom_ids))
     rows = (await session.execute(stmt)).all()
 
-    best_prevalence: dict[int, float] = {}
-    for symptom_id, prevalence in rows:
-        value = float(prevalence or 0.0)
-        if symptom_id not in best_prevalence or value > best_prevalence[symptom_id]:
-            best_prevalence[symptom_id] = value
+    best_weight: dict[int, int] = {}
+    for symptom_id, weight in rows:
+        value = int(weight or 0)
+        if symptom_id not in best_weight or value > best_weight[symptom_id]:
+            best_weight[symptom_id] = value
 
-    # prevalence desc，id asc 兜底，保证确定性
-    top_ids = sorted(best_prevalence, key=lambda sid: (-best_prevalence[sid], sid))[:k]
+    # discrimination_weight desc，id asc 兜底，保证确定性
+    top_ids = sorted(best_weight, key=lambda sid: (-best_weight[sid], sid))[:k]
     if not top_ids:
         return []
 
@@ -153,7 +184,7 @@ async def select_followup_questions(
     name_by_id = {symptom.id: symptom.name for symptom in symptoms}
 
     return [
-        {"id": sid, "name": name_by_id[sid], "prevalence": best_prevalence[sid]}
+        {"id": sid, "name": name_by_id[sid], "discrimination_weight": best_weight[sid]}
         for sid in top_ids
     ]
 
