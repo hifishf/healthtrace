@@ -190,18 +190,18 @@ def build_triage_graph(llm=None, checkpointer=None):
             "pending_question": next_question,
         }
 
-    graph = StateGraph(TriageState)
-    graph.add_node("extract", extract_node)
-    graph.add_node("ask", ask_node)
-    graph.add_node("advise", advise_node)
+    graph = StateGraph(TriageState)  # 以 TriageState 为状态结构创建状态图
+    graph.add_node("extract", extract_node)  # 入口节点：抽症状/红旗/主体边界/候选集/选下一问
+    graph.add_node("ask", ask_node)  # 追问节点：interrupt 挂起等回答，恢复后轮次 +1
+    graph.add_node("advise", advise_node)  # 建议节点：按候选集生成 final_advice
 
-    graph.add_edge(START, "extract")
-    graph.add_conditional_edges(
+    graph.add_edge(START, "extract")  # 从 START 进入 extract（首次输入的处理入口）
+    graph.add_conditional_edges(  # extract 之后按路由函数返回值做条件分流
         "extract",
-        route_after_extract,
-        {"ask": "ask", "advise": "advise"},
+        route_after_extract,  # 路由：红旗/他人/硬上限/无可追问 -> advise，否则 -> ask
+        {"ask": "ask", "advise": "advise"},  # 返回值到目标节点的映射
     )
-    graph.add_edge("ask", "extract")
-    graph.add_edge("advise", END)
+    graph.add_edge("ask", "extract")  # 用户回答追问后回到 extract，形成追问循环
+    graph.add_edge("advise", END)  # 生成建议后结束本次会话
 
     return graph.compile(checkpointer=checkpointer)
