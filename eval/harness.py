@@ -11,11 +11,18 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import random
 import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+
+from deepeval.test_case import LLMTestCase
+
+from eval.metrics import build_advice_quality_metric
+from eval.runner import run_triage_batch
 
 # 仓库根（eval/ 的上一级）：从任意工作目录运行都能定位 tests 与 golden
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,13 +53,49 @@ def run_deterministic(args: argparse.Namespace) -> int:
     return subprocess.call(cmd, cwd=REPO_ROOT)
 
 
+def _sample(cases: list[dict], n: int | None) -> list[dict]:
+    """抽样：n 为空或超过总量则全量；否则按固定种子抽 n 条（结果可复现）。"""
+    if n is None or n >= len(cases):
+        return cases
+    return random.Random(0).sample(cases, n)
+
+
 def run_semantic(args: argparse.Namespace) -> int:
-    """语义评估（占位）：先能发现 golden 用例，judge 打分在第 3、4 步接入。"""
+    """语义评估：读 golden -> 跑真实分诊 -> judge 打分 -> 汇总。"""
     cases = list(iter_golden())
     if not cases:
-        print("语义评估尚未接入：第 3 步加 judge，第 4 步加 golden 集。")
+        print(f"golden 目录为空：{GOLDEN_DIR}，请先放用例。")
         return 0
-    print(f"发现 golden 用例 {len(cases)} 条（目录：{GOLDEN_DIR}）；judge 打分逻辑在第 3 步接入。")
+
+    sampled = _sample(cases, args.sample)
+    advices = asyncio.run(run_triage_batch([case["input"] for case in sampled]))
+
+    metric = build_advice_quality_metric()
+    scores: list[float] = []
+    level_hit = 0
+    for case, advice in zip(sampled, advices):
+        level = advice.get("level") or "unknown"
+        suggestion = advice.get("suggestion") or ""
+        conditions = advice.get("conditions") or []
+        expected_level = case.get("expected_level")
+        if expected_level == level:
+            level_hit += 1
+
+        test_case = LLMTestCase(
+            input=case["input"],
+            actual_output=suggestion,
+            context=[
+                f"建议级别：{level}（实际分级）",
+                f"候选方向：{'、'.join(conditions) if conditions else '无'}",
+            ],
+            retrieval_context=conditions or ["无候选方向"],
+        )
+        metric.measure(test_case)
+        scores.append(metric.score)
+        print(f"{case['id']}  级别={level}  分数={metric.score:.2f}")
+
+    mean = sum(scores) / len(scores)
+    print(f"抽样 {len(sampled)} 条；平均分 {mean:.3f}；级别命中 {level_hit}/{len(sampled)}")
     return 0
 
 
@@ -69,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     det.set_defaults(func=run_deterministic)
 
     sem = sub.add_parser("semantic", help="跑语义评估（golden 集 + judge）")
+    sem.add_argument("--sample", type=int, default=None, help="抽样条数，默认全量")
     sem.set_defaults(func=run_semantic)
 
     args = parser.parse_args(argv)
