@@ -43,26 +43,10 @@ class TriageState(TypedDict):
     pending_question: dict | None  # 下一轮追问（内部实现细节）
 
 
-_EMERGENCY_ADVICE: dict = {
-    "level": "emergency",
-    "label": "立即就医",
-    "conditions": [],
-    "suggestion": "你描述的症状属于紧急情况，请立即就医或拨打急救电话，不要等待线上建议。",
-}
-
-_ACCOMPANY_ADVICE: dict = {
-    "level": "accompany",
-    "label": "建议陪同就医",
-    "conditions": [],
-    "suggestion": "这是他人的症状，无法代替本人分诊，建议陪同就医。",
-}
-
-_NO_SYMPTOM_ADVICE: dict = {
-    "level": "no_symptom",
-    "label": "未识别到症状",
-    "conditions": [],
-    "suggestion": "我没听出你具体哪里不舒服，请再描述一下症状（比如：最近总是累、胸口疼）。",
-}
+# 特殊级别的「安全核心」逐字固定；LLM 只写前面的共情/承接话术。
+_EMERGENCY_CORE = "请立即就医或拨打急救电话，不要等待线上建议。"
+_ACCOMPANY_CORE = "这是他人的症状，无法代替本人分诊，建议陪同就医。"
+_NO_SYMPTOM_CORE = "请再描述一下具体症状（比如：最近总是累、胸口疼）。"
 
 _SUGGESTIONS: dict[str, str] = {
     "observe": "根据你描述的症状，目前倾向先观察休息并注意变化，如症状加重请及时就医。",
@@ -83,6 +67,11 @@ _ADVICE_WRITE_SYSTEM = (
     "必须遵守：不输出诊断结论（不说「你得了某病」），不推荐处方药，紧急时建议就医。"
     "只能使用给定的候选方向、已采集症状和画像，不要编造用户未提供的信息。"
     "只输出建议这一句，不要加引号，不要改写给定级别。"
+)
+_SPECIAL_WRITE_SYSTEM = (
+    "你是 HealthTrace 的健康管家。请根据级别和上下文，写一句简短、温和的中文共情/承接话术。"
+    "只输出这一句话，不要加引号，不要给出诊断，不要推荐处方药；"
+    "不要给出就医/拨打急救电话等行动建议（行动指令会由系统追加），也不要重复安全指令。"
 )
 
 # 追问回答的肯定/否定表面形式（确定性，不依赖 LLM；否定优先于肯定，
@@ -137,6 +126,21 @@ def initial_triage_state(text: str) -> dict:
         "red_flag_triggered": False,
         "final_advice": None,
         "pending_question": None,
+    }
+
+
+def _advice_payload(
+    level: str,
+    label: str,
+    suggestion: str,
+    conditions: list[str] | None = None,
+) -> dict:
+    """组装 final_advice 字典（级别/标签/条件/建议）。"""
+    return {
+        "level": level,
+        "label": label,
+        "conditions": conditions or [],
+        "suggestion": suggestion,
     }
 
 
@@ -218,6 +222,40 @@ async def _write_advice(
         return fallback
 
 
+async def _write_special_advice(
+    writer_llm,
+    level: str,
+    label: str,
+    core: str,
+    context: str,
+) -> str:
+    """特殊级别：LLM 写共情前缀 + 固定安全核心；失败只用核心。"""
+    try:
+        with llm_span(
+            "llm.triage.write_special_advice",
+            {"level": level, "context": context},
+        ):
+            response = await writer_llm.ainvoke(
+                [
+                    SystemMessage(content=_SPECIAL_WRITE_SYSTEM),
+                    HumanMessage(
+                        content=f"级别：{label}（{level}）\n上下文：{context}\n请写一句承接话术。"
+                    ),
+                ]
+            )
+            prefix = (response.content or "").strip()
+            set_output(prefix)
+        if prefix:
+            set_attr("triage.advice_source", "llm")
+            separator = "" if prefix.endswith(("。", "！", "？", "…")) else "。"
+            return f"{prefix}{separator}{core}"
+        set_attr("triage.advice_source", "template_empty")
+        return core
+    except Exception:
+        set_attr("triage.advice_source", "template_error")
+        return core
+
+
 def route_after_extract(state: TriageState) -> str:
     """extract 之后的确定性路由：红旗/他人/硬上限/无可追问 -> 建议，否则追问。"""
     if state.get("red_flag_triggered") or state.get("final_advice") is not None:
@@ -245,13 +283,21 @@ def ask_node(state: TriageState) -> dict:
     }
 
 
-def build_triage_graph(llm=None, checkpointer=None):
+def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
     """构建追问分诊子图（extract -> ask(interrupt) 循环 -> advise）。
 
-    llm 可注入 fake 做确定性测试；checkpointer 必须提供（interrupt 依赖断点持久化）。
+    llm 负责确定性抽取（temperature=0）；writer_llm 负责话术转写（较高 temperature）。
+    两者都可注入 fake 做确定性测试；checkpointer 必须提供（interrupt 依赖断点持久化）。
     """
+    injected_llm = llm is not None
     if llm is None:
         llm = get_llm()
+    if writer_llm is None:
+        writer_llm = (
+            llm
+            if injected_llm
+            else get_llm(temperature=settings.llm_writer_temperature)
+        )
 
     @traced("graph.triage.advise")
     async def advise_node(state: TriageState) -> dict:
@@ -262,13 +308,25 @@ def build_triage_graph(llm=None, checkpointer=None):
         # 未识别到症状：不给健康建议，提示重新描述
         if not state.get("collected_symptoms") or not state.get("candidate_conditions"):
             set_attr("triage.level", "no_symptom")
-            return {"final_advice": _NO_SYMPTOM_ADVICE}
+            suggestion = await _write_special_advice(
+                writer_llm,
+                "no_symptom",
+                "未识别到症状",
+                _NO_SYMPTOM_CORE,
+                f"用户输入：{state['messages'][-1].content}；"
+                f"画像：{portrait.summarize(state.get('health_portrait') or {})}",
+            )
+            return {
+                "final_advice": _advice_payload(
+                    "no_symptom", "未识别到症状", suggestion
+                )
+            }
         level = classify_advice_level_by_hints(
             [candidate.get("urgency_hint") for candidate in state["candidate_conditions"]]
         )
         candidates = state["candidate_conditions"]
         suggestion = await _write_advice(
-            llm,
+            writer_llm,
             level,
             ADVICE_LEVELS[level],
             [candidate["name"] for candidate in candidates],
@@ -320,16 +378,35 @@ def build_triage_graph(llm=None, checkpointer=None):
         set_attr("triage.answer_verdict", answered_verdict)
         set_attr("triage.red_flag", red_flag.triggered)
 
+        portrait_text = portrait.summarize(loaded_portrait)
         if red_flag.triggered:
+            suggestion = await _write_special_advice(
+                writer_llm,
+                "emergency",
+                "立即就医",
+                _EMERGENCY_CORE,
+                f"用户描述：{text}；匹配红旗：{'、'.join(red_flag.matched) or '无'}；"
+                f"已抽症状：{'、'.join(extraction.symptoms) or '无'}；画像：{portrait_text}",
+            )
             return {
                 "health_portrait": loaded_portrait,
                 "red_flag_triggered": True,
-                "final_advice": _EMERGENCY_ADVICE,
+                "final_advice": _advice_payload("emergency", "立即就医", suggestion),
             }
         if extraction.subject == "other":
+            suggestion = await _write_special_advice(
+                writer_llm,
+                "accompany",
+                "建议陪同就医",
+                _ACCOMPANY_CORE,
+                f"用户描述：{text}；已抽症状：{'、'.join(extraction.symptoms) or '无'}；"
+                f"画像：{portrait_text}",
+            )
             return {
                 "health_portrait": loaded_portrait,
-                "final_advice": _ACCOMPANY_ADVICE,
+                "final_advice": _advice_payload(
+                    "accompany", "建议陪同就医", suggestion
+                ),
             }
 
         async with async_session() as session:
@@ -377,10 +454,10 @@ def build_triage_graph(llm=None, checkpointer=None):
         if pending:
             name = pending[0]["name"]
             question_text = await _rephrase_question(
-                llm,
+                writer_llm,
                 name,
                 list(collected.values()),
-                portrait.summarize(loaded_portrait),
+                portrait_text,
             )
             next_question = {
                 "id": pending[0]["id"],

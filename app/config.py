@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     llm_api_key: str = ""
     llm_model: str = "deepseek-chat"
+    # 转写/话术生成的温度（结构化抽取/路由仍用 temperature=0）
+    llm_writer_temperature: float = 0.7
     # Router 置信度阈值：低于该值强制回落 chat 兜底
     router_confidence_threshold: float = 0.7
     # 单用户：固定默认 user_id（与 schema/init.sql 种子一致）

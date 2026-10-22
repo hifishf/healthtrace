@@ -37,11 +37,9 @@ class _FakeLLM:
             if self._rephrase_fn is None:
                 raise RuntimeError("LLM 转写不可用")
             return AIMessage(content=self._rephrase_fn())
-        if "建议级别" in joined:
-            if self._advice_fn is None:
-                raise RuntimeError("LLM 转写不可用")
+        if self._advice_fn is not None:
             return AIMessage(content=self._advice_fn())
-        raise RuntimeError("未知提示词")
+        raise RuntimeError("LLM 转写不可用")
 
 
 def _fatigue_then_empty(text: str) -> SymptomExtraction:
@@ -154,3 +152,62 @@ async def test_advice_falls_back_to_template_when_llm_fails() -> None:
 
     level = result["final_advice"]["level"]
     assert result["final_advice"]["suggestion"] == _SUGGESTIONS[level]
+
+
+async def test_emergency_advice_uses_llm_prefix_and_keeps_core() -> None:
+    """红旗：LLM 写共情前缀，固定安全核心逐字保留。"""
+    llm = _FakeLLM(
+        lambda text: SymptomExtraction(symptoms=["胸痛"], subject="self"),
+        advice_fn=lambda: "听起来你现在很不舒服。",
+    )
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.checkpoint_database_url
+    ) as saver:
+        await saver.setup()
+        graph = build_triage_graph(llm=llm, checkpointer=saver)
+        config = {"configurable": {"thread_id": f"em-{uuid.uuid4().hex[:8]}"}}
+        result = await graph.ainvoke(
+            initial_triage_state("胸口疼得喘不上气"), config=config
+        )
+
+    suggestion = result["final_advice"]["suggestion"]
+    assert "听起来你现在很不舒服。" in suggestion
+    assert "请立即就医或拨打急救电话，不要等待线上建议。" in suggestion
+
+
+async def test_accompany_advice_uses_llm_prefix_and_keeps_core() -> None:
+    """他人症状：LLM 写共情前缀，固定陪同就医核心逐字保留。"""
+    llm = _FakeLLM(
+        lambda text: SymptomExtraction(symptoms=["胸痛"], subject="self"),
+        advice_fn=lambda: "家人的健康确实需要多留意。",
+    )
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.checkpoint_database_url
+    ) as saver:
+        await saver.setup()
+        graph = build_triage_graph(llm=llm, checkpointer=saver)
+        config = {"configurable": {"thread_id": f"ac-{uuid.uuid4().hex[:8]}"}}
+        result = await graph.ainvoke(initial_triage_state("我爸爸胸痛"), config=config)
+
+    suggestion = result["final_advice"]["suggestion"]
+    assert "家人的健康确实需要多留意。" in suggestion
+    assert "建议陪同就医" in suggestion
+
+
+async def test_no_symptom_advice_uses_llm_prefix_and_keeps_core() -> None:
+    """未识别症状：LLM 写承接话术，固定提示逐字保留。"""
+    llm = _FakeLLM(
+        lambda text: SymptomExtraction(symptoms=[], subject="self"),
+        advice_fn=lambda: "没关系，我们慢慢来。",
+    )
+    async with AsyncPostgresSaver.from_conn_string(
+        settings.checkpoint_database_url
+    ) as saver:
+        await saver.setup()
+        graph = build_triage_graph(llm=llm, checkpointer=saver)
+        config = {"configurable": {"thread_id": f"ns-{uuid.uuid4().hex[:8]}"}}
+        result = await graph.ainvoke(initial_triage_state("你好"), config=config)
+
+    suggestion = result["final_advice"]["suggestion"]
+    assert "没关系，我们慢慢来。" in suggestion
+    assert "请再描述一下具体症状" in suggestion

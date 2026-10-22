@@ -32,7 +32,7 @@ from app.schemas import (
 async def lifespan(app: FastAPI):
     """应用生命周期：打开 Postgres checkpointer 并构建追问分诊图（interrupt 依赖它）。"""
     async with open_checkpointer() as saver:
-        app.state.triage_graph = build_triage_graph(llm=get_llm(), checkpointer=saver)
+        app.state.triage_graph = build_triage_graph(checkpointer=saver)
         yield
 
 
