@@ -208,8 +208,13 @@ async def _write_advice(
             )
             set_output((response.content or "").strip())
         text = (response.content or "").strip()
-        return text or fallback
+        if text:
+            set_attr("triage.advice_source", "llm")
+            return text
+        set_attr("triage.advice_source", "template_empty")
+        return fallback
     except Exception:
+        set_attr("triage.advice_source", "template_error")
         return fallback
 
 
