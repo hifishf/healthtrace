@@ -47,7 +47,7 @@ jobs:
         run: .venv/bin/python -m pytest -q
 
   semantic:
-    name: 语义评估（PR 抽样 / main 与定时全量）
+    name: 语义评估（PR/main 抽样 5，定时全量）
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -80,7 +80,7 @@ jobs:
           psql "postgresql://healthtrace:healthtrace@localhost:5432/healthtrace" -f schema/init.sql
       - name: 灌种子数据
         run: .venv/bin/python scripts/seed_knowledge.py
-      - name: 语义评估（抽样 / 全量）
+      - name: 语义评估（PR/main 抽样 5，定时全量）
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: |
@@ -88,8 +88,8 @@ jobs:
             echo "未配置 LLM_API_KEY secret，跳过语义评估"
             exit 0
           fi
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            .venv/bin/python -m eval.harness semantic --sample 5
-          else
+          if [ "${{ github.event_name }}" = "schedule" ]; then
             .venv/bin/python -m eval.harness semantic
+          else
+            .venv/bin/python -m eval.harness semantic --sample 5
           fi
