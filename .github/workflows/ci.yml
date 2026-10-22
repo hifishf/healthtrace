@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 每周一 UTC 03:00 全量语义评估（对应北京时间周一 11:00）
+    - cron: "0 3 * * 1"
+
+jobs:
+  deterministic:
+    name: 确定性红线（pytest 全量）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: healthtrace
+          POSTGRES_PASSWORD: healthtrace
+          POSTGRES_DB: healthtrace
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U healthtrace -d healthtrace"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 安装 uv 并同步依赖
+        run: |
+          python -m pip install --upgrade uv
+          uv sync --all-groups
+      - name: 初始化数据库结构
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql "postgresql://healthtrace:healthtrace@localhost:5432/healthtrace" -f schema/init.sql
+      - name: 灌种子数据
+        run: .venv/bin/python scripts/seed_knowledge.py
+      - name: 跑确定性测试（红线）
+        run: .venv/bin/python -m pytest -q
+
+  semantic:
+    name: 语义评估（PR 抽样 / main 与定时全量）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: healthtrace
+          POSTGRES_PASSWORD: healthtrace
+          POSTGRES_DB: healthtrace
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U healthtrace -d healthtrace"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: 安装 uv 并同步依赖
+        run: |
+          python -m pip install --upgrade uv
+          uv sync --all-groups
+      - name: 初始化数据库结构
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql "postgresql://healthtrace:healthtrace@localhost:5432/healthtrace" -f schema/init.sql
+      - name: 灌种子数据
+        run: .venv/bin/python scripts/seed_knowledge.py
+      - name: 语义评估（抽样 / 全量）
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        run: |
+          if [ -z "$LLM_API_KEY" ]; then
+            echo "未配置 LLM_API_KEY secret，跳过语义评估"
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            .venv/bin/python -m eval.harness semantic --sample 5
+          else
+            .venv/bin/python -m eval.harness semantic
+          fi
