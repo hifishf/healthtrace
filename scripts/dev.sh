@@ -14,17 +14,21 @@ if ! grep -q '^LLM_API_KEY=sk-' .env 2>/dev/null; then
 fi
 
 # 1) 基础设施（幂等，已运行的会跳过）
-echo "▶ [1/3] Docker 基础设施..."
+echo "▶ [1/4] Docker 基础设施..."
 docker compose up -d
 
-# 2) 后端：DeepSeek 是境内服务，直连更快更稳，故绕过可能失效的本地代理
-echo "▶ [2/3] 后端 http://127.0.0.1:8000"
+# 2) 数据库迁移：Alembic 接管 schema（幂等，upgrade head 可重复执行）
+echo "▶ [2/4] 数据库迁移（alembic upgrade head）..."
+.venv/bin/alembic upgrade head
+
+# 3) 后端：DeepSeek 是境内服务，直连更快更稳，故绕过可能失效的本地代理
+echo "▶ [3/4] 后端 http://127.0.0.1:8000"
 env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
     .venv/bin/uvicorn app.main:app --reload --port 8000 &
 BACKEND_PID=$!
 
-# 3) 前端
-echo "▶ [3/3] 前端 http://localhost:8501"
+# 4) 前端
+echo "▶ [4/4] 前端 http://localhost:8501"
 .venv/bin/streamlit run frontend/streamlit_app.py &
 FRONTEND_PID=$!
 

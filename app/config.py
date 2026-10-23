@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     # 应用数据库（docker-compose 里的 db 服务）
     database_url: str = "postgresql+asyncpg://healthtrace:healthtrace@localhost:5432/healthtrace"
+    # Alembic 同步连接串（psycopg 驱动；alembic 用同步引擎，不认 asyncpg 的异步连接串）
+    database_url_sync: str = "postgresql+psycopg://healthtrace:healthtrace@localhost:5432/healthtrace"
     # LangGraph Postgres checkpointer（psycopg 驱动；与 SQLAlchemy 的 asyncpg 分开，
     # 因为 AsyncPostgresSaver 走 psycopg，不认 asyncpg 的连接串）
     checkpoint_database_url: str = "postgresql://healthtrace:healthtrace@localhost:5432/healthtrace"
