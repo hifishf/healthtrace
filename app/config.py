@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     llm_model: str = "deepseek-chat"
     # 转写/话术生成的温度（结构化抽取/路由仍用 temperature=0）
     llm_writer_temperature: float = 0.7
+    # LLM 调用超时（秒）与重试次数（重试在统一调用层实现，SDK 层重试已禁用）
+    llm_timeout_seconds: float = 30.0
+    llm_max_retries: int = 2
+    # 单次生成 token 上限（限制单响应成本）
+    llm_max_tokens: int = 1024
+    # 单会话累计 token 估算上限：超限强制收口，后续降级走规则模板（成本控制）
+    llm_session_token_budget: int = 12000
     # Router 置信度阈值：低于该值强制回落 chat 兜底
     router_confidence_threshold: float = 0.7
     # 单用户：固定默认 user_id（与 schema/init.sql 种子一致）

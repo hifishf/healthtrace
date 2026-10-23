@@ -7,8 +7,9 @@ from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 
 from app import portrait
+from app.agent.budget import TokenBudget
 from app.agent.extraction import extract_symptoms
-from app.agent.llm import get_llm
+from app.agent.llm import LLMUnavailable, get_llm, invoke_llm
 from app.agent.red_flags import check_red_flag
 from app.config import settings
 from app.kb import (
@@ -41,6 +42,7 @@ class TriageState(TypedDict):
     red_flag_triggered: bool
     final_advice: dict | None
     pending_question: dict | None  # 下一轮追问（内部实现细节）
+    llm_tokens_used: int  # 本会话累计 token 估算（成本上限用）
 
 
 # 特殊级别的「安全核心」逐字固定；LLM 只写前面的共情/承接话术。
@@ -126,6 +128,7 @@ def initial_triage_state(text: str) -> dict:
         "red_flag_triggered": False,
         "final_advice": None,
         "pending_question": None,
+        "llm_tokens_used": 0,
     }
 
 
@@ -150,19 +153,23 @@ def _question_template(name: str) -> str:
 
 
 async def _rephrase_question(
+    budget: TokenBudget,
     llm,
     name: str,
     collected_names: list[str],
     portrait_summary: str,
 ) -> str:
-    """把选中的症状转写成自然语言追问；失败回退确定性模板。"""
+    """把选中的症状转写成自然语言追问；失败/超限回退确定性模板。"""
     fallback = _question_template(name)
+    if budget.exhausted():
+        set_attr("fallback_reason", "token_budget_exceeded")
+        return fallback
+    context = (
+        f"待确认症状：{name}\n"
+        f"已采集症状：{'、'.join(collected_names) if collected_names else '无'}\n"
+        f"健康画像：{portrait_summary or '暂无'}"
+    )
     try:
-        context = (
-            f"待确认症状：{name}\n"
-            f"已采集症状：{'、'.join(collected_names) if collected_names else '无'}\n"
-            f"健康画像：{portrait_summary or '暂无'}"
-        )
         with llm_span(
             "llm.triage.rephrase_question",
             {
@@ -171,17 +178,24 @@ async def _rephrase_question(
                 "portrait": portrait_summary,
             },
         ):
-            response = await llm.ainvoke(
+            response = await invoke_llm(
+                llm,
                 [SystemMessage(content=_QUESTION_REPHRASE_SYSTEM), HumanMessage(content=context)]
             )
-            set_output((response.content or "").strip())
-        text = (response.content or "").strip()
-        return text or fallback
-    except Exception:
+            text = (response.content or "").strip()
+            set_output(text)
+        if text:
+            budget.consume(budget.estimate(context + text))
+            return text
+        set_attr("fallback_reason", "empty_response")
+        return fallback
+    except LLMUnavailable as exc:
+        set_attr("fallback_reason", exc.reason)
         return fallback
 
 
 async def _write_advice(
+    budget: TokenBudget,
     llm,
     level: str,
     label: str,
@@ -189,15 +203,18 @@ async def _write_advice(
     collected_names: list[str],
     portrait_summary: str,
 ) -> str:
-    """把确定性分级转写成自然语言建议；失败回退该级别的模板。"""
+    """把确定性分级转写成自然语言建议；失败/超限回退该级别的模板。"""
     fallback = _SUGGESTIONS.get(level, "建议咨询医生进一步评估。")
+    if budget.exhausted():
+        set_attr("fallback_reason", "token_budget_exceeded")
+        return fallback
+    context = (
+        f"建议级别：{label}（{level}）\n"
+        f"候选方向：{'、'.join(condition_names) if condition_names else '无'}\n"
+        f"已采集症状：{'、'.join(collected_names) if collected_names else '无'}\n"
+        f"健康画像：{portrait_summary or '暂无'}"
+    )
     try:
-        context = (
-            f"建议级别：{label}（{level}）\n"
-            f"候选方向：{'、'.join(condition_names) if condition_names else '无'}\n"
-            f"已采集症状：{'、'.join(collected_names) if collected_names else '无'}\n"
-            f"健康画像：{portrait_summary or '暂无'}"
-        )
         with llm_span(
             "llm.triage.write_advice",
             {
@@ -207,35 +224,44 @@ async def _write_advice(
                 "portrait": portrait_summary,
             },
         ):
-            response = await llm.ainvoke(
+            response = await invoke_llm(
+                llm,
                 [SystemMessage(content=_ADVICE_WRITE_SYSTEM), HumanMessage(content=context)]
             )
-            set_output((response.content or "").strip())
-        text = (response.content or "").strip()
+            text = (response.content or "").strip()
+            set_output(text)
         if text:
             set_attr("triage.advice_source", "llm")
+            budget.consume(budget.estimate(context + text))
             return text
         set_attr("triage.advice_source", "template_empty")
+        set_attr("fallback_reason", "empty_response")
         return fallback
-    except Exception:
+    except LLMUnavailable as exc:
         set_attr("triage.advice_source", "template_error")
+        set_attr("fallback_reason", exc.reason)
         return fallback
 
 
 async def _write_special_advice(
+    budget: TokenBudget,
     writer_llm,
     level: str,
     label: str,
     core: str,
     context: str,
 ) -> str:
-    """特殊级别：LLM 写共情前缀 + 固定安全核心；失败只用核心。"""
+    """特殊级别：LLM 写共情前缀 + 固定安全核心；失败/超限只用核心。"""
+    if budget.exhausted():
+        set_attr("fallback_reason", "token_budget_exceeded")
+        return core
     try:
         with llm_span(
             "llm.triage.write_special_advice",
             {"level": level, "context": context},
         ):
-            response = await writer_llm.ainvoke(
+            response = await invoke_llm(
+                writer_llm,
                 [
                     SystemMessage(content=_SPECIAL_WRITE_SYSTEM),
                     HumanMessage(
@@ -247,12 +273,15 @@ async def _write_special_advice(
             set_output(prefix)
         if prefix:
             set_attr("triage.advice_source", "llm")
+            budget.consume(budget.estimate(context + prefix))
             separator = "" if prefix.endswith(("。", "！", "？", "…")) else "。"
             return f"{prefix}{separator}{core}"
         set_attr("triage.advice_source", "template_empty")
+        set_attr("fallback_reason", "empty_response")
         return core
-    except Exception:
+    except LLMUnavailable as exc:
         set_attr("triage.advice_source", "template_error")
+        set_attr("fallback_reason", exc.reason)
         return core
 
 
@@ -302,13 +331,17 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
     @traced("graph.triage.advise")
     async def advise_node(state: TriageState) -> dict:
         """生成最终分级建议：级别由确定性规则算，措辞由 LLM 转写（失败回退模板）。"""
+        budget = TokenBudget(
+            settings.llm_session_token_budget, used=state.get("llm_tokens_used", 0)
+        )
         if state.get("final_advice") is not None:
             set_attr("triage.level", state["final_advice"].get("level"))
-            return {}
+            return {"llm_tokens_used": budget.used}
         # 未识别到症状：不给健康建议，提示重新描述
         if not state.get("collected_symptoms") or not state.get("candidate_conditions"):
             set_attr("triage.level", "no_symptom")
             suggestion = await _write_special_advice(
+                budget,
                 writer_llm,
                 "no_symptom",
                 "未识别到症状",
@@ -319,13 +352,15 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
             return {
                 "final_advice": _advice_payload(
                     "no_symptom", "未识别到症状", suggestion
-                )
+                ),
+                "llm_tokens_used": budget.used,
             }
         level = classify_advice_level_by_hints(
             [candidate.get("urgency_hint") for candidate in state["candidate_conditions"]]
         )
         candidates = state["candidate_conditions"]
         suggestion = await _write_advice(
+            budget,
             writer_llm,
             level,
             ADVICE_LEVELS[level],
@@ -342,7 +377,8 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
                 "label": ADVICE_LEVELS[level],
                 "conditions": [candidate["name"] for candidate in candidates],
                 "suggestion": suggestion,
-            }
+            },
+            "llm_tokens_used": budget.used,
         }
 
     @traced("graph.triage.extract")
@@ -356,49 +392,88 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
         loaded_portrait = await call_tool(
             "get_health_portrait", {"user_id": str(settings.default_user_id)}
         )
-
-        extraction = await extract_symptoms(
-            text,
-            llm,
-            portrait_summary=portrait.summarize(loaded_portrait),
-            pending_question=pending_q.get("text") if pending_q else None,
+        portrait_text = portrait.summarize(loaded_portrait)
+        budget = TokenBudget(
+            settings.llm_session_token_budget, used=state.get("llm_tokens_used", 0)
         )
+
+        # 症状抽取走统一 LLM 调用层；失败不阻断红旗等确定性逻辑
+        try:
+            extraction = await extract_symptoms(
+                text,
+                llm,
+                portrait_summary=portrait_text,
+                pending_question=pending_q.get("text") if pending_q else None,
+            )
+            budget.consume(
+                budget.estimate(
+                    text + str(extraction.symptoms) + str(extraction.answer_verdict)
+                )
+            )
+            extraction_failed = False
+        except LLMUnavailable as exc:
+            extraction = None
+            extraction_failed = True
+            set_attr("fallback_reason", exc.reason)
+            set_attr("triage.extraction", "failed")
+
         # 追问回答判定以 LLM 结构化结果为主（理解语义），状态更新仍确定性执行；
-        # LLM 判不清时回退到确定性极性/反向词兜底。
-        answered_verdict = extraction.answer_verdict if pending_q else "not_applicable"
-        if pending_q and answered_verdict in ("unclear", "not_applicable"):
-            if not extraction.symptoms:
-                answered_verdict = answer_polarity(text)
-            elif contradicts_pending(text, pending_q.get("name", "")):
-                answered_verdict = "contradict"
-        red_flag = check_red_flag(text, extraction.subject)
-        set_attr("triage.symptoms", extraction.symptoms)
-        set_attr("triage.subject", extraction.subject)
+        # LLM 判不清时回退到确定性极性/反向词兜底；抽取失败时视为无法理解。
+        symptoms: list[str] = [] if extraction_failed else extraction.symptoms
+        subject = "self" if extraction_failed else extraction.subject
+        answered_verdict = "not_applicable"
+        if not extraction_failed:
+            answered_verdict = extraction.answer_verdict if pending_q else "not_applicable"
+            if pending_q and answered_verdict in ("unclear", "not_applicable"):
+                if not extraction.symptoms:
+                    answered_verdict = answer_polarity(text)
+                elif contradicts_pending(text, pending_q.get("name", "")):
+                    answered_verdict = "contradict"
+        red_flag = check_red_flag(text, subject)
+        set_attr("triage.symptoms", symptoms)
+        set_attr("triage.subject", subject)
         set_attr("triage.answer_verdict", answered_verdict)
         set_attr("triage.red_flag", red_flag.triggered)
-
-        portrait_text = portrait.summarize(loaded_portrait)
         if red_flag.triggered:
             suggestion = await _write_special_advice(
+                budget,
                 writer_llm,
                 "emergency",
                 "立即就医",
                 _EMERGENCY_CORE,
                 f"用户描述：{text}；匹配红旗：{'、'.join(red_flag.matched) or '无'}；"
-                f"已抽症状：{'、'.join(extraction.symptoms) or '无'}；画像：{portrait_text}",
+                f"已抽症状：{'、'.join(symptoms) or '无'}；画像：{portrait_text}",
             )
             return {
                 "health_portrait": loaded_portrait,
                 "red_flag_triggered": True,
                 "final_advice": _advice_payload("emergency", "立即就医", suggestion),
+                "llm_tokens_used": budget.used,
             }
-        if extraction.subject == "other":
+        if extraction_failed:
+            # 无法理解输入且无红旗：确定性提示重新描述（不依赖 LLM）
+            set_attr("triage.level", "no_symptom")
             suggestion = await _write_special_advice(
+                budget,
+                writer_llm,
+                "no_symptom",
+                "未识别到症状",
+                _NO_SYMPTOM_CORE,
+                f"用户输入：{text}；画像：{portrait_text}",
+            )
+            return {
+                "health_portrait": loaded_portrait,
+                "final_advice": _advice_payload("no_symptom", "未识别到症状", suggestion),
+                "llm_tokens_used": budget.used,
+            }
+        if subject == "other":
+            suggestion = await _write_special_advice(
+                budget,
                 writer_llm,
                 "accompany",
                 "建议陪同就医",
                 _ACCOMPANY_CORE,
-                f"用户描述：{text}；已抽症状：{'、'.join(extraction.symptoms) or '无'}；"
+                f"用户描述：{text}；已抽症状：{'、'.join(symptoms) or '无'}；"
                 f"画像：{portrait_text}",
             )
             return {
@@ -406,9 +481,10 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
                 "final_advice": _advice_payload(
                     "accompany", "建议陪同就医", suggestion
                 ),
+                "llm_tokens_used": budget.used,
             }
 
-        symptom_ids = await match_symptoms(extraction.symptoms)
+        symptom_ids = await match_symptoms(symptoms)
         # 肯定回答回填：答「有」时 LLM 抽不到症状，直接用上一轮 pending 症状补上
         if answered_verdict == "affirm" and pending_q and pending_q.get("id") is not None:
             pending_id = int(pending_q["id"])
@@ -451,6 +527,7 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
         if pending:
             name = pending[0]["name"]
             question_text = await _rephrase_question(
+                budget,
                 writer_llm,
                 name,
                 list(collected.values()),
@@ -479,6 +556,7 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
             "candidate_count": len(candidates),
             "top_tier_count": top_tier_size(candidates),
             "pending_question": next_question,
+            "llm_tokens_used": budget.used,
         }
 
     graph = StateGraph(TriageState)  # 以 TriageState 为状态结构创建状态图

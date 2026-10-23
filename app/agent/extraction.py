@@ -2,6 +2,7 @@
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.agent.llm import invoke_llm
 from app.observability import llm_span, set_output
 from app.schemas import SymptomExtraction
 
@@ -90,13 +91,14 @@ async def extract_symptoms(
         },
     ):
         runnable = llm.with_structured_output(SymptomExtraction, method="function_calling")
-        result = await runnable.ainvoke(
+        result = await invoke_llm(
+            runnable,
             [
                 SystemMessage(
                     content=build_system_prompt(portrait_summary, pending_question)
                 ),
                 HumanMessage(content=text),
-            ]
+            ],
         )
         set_output(result)
     # 主体边界：确定性指代词优先，LLM 只是补充，避免“我爸爸胸痛”被误判成 self

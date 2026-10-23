@@ -2,7 +2,9 @@
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from app.agent.llm import LLMUnavailable, invoke_llm
 from app.config import settings
+from app.observability import set_attr
 from app.schemas import RouteDecision
 
 # 明确“对话式记录”属于 chat，避免把“睡了 6 小时”误判为 triage
@@ -36,7 +38,13 @@ async def route(text: str, llm: BaseChatModel) -> RouteDecision:
     json_schema 严格模式，因此显式指定 function calling 而非默认值。
     """
     runnable = llm.with_structured_output(RouteDecision, method="function_calling")
-    decision = await runnable.ainvoke(
-        [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=text)]
-    )
+    try:
+        decision = await invoke_llm(
+            runnable,
+            [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=text)],
+        )
+    except LLMUnavailable as exc:
+        # 路由 LLM 不可用：宁少路由，勿错路由，强制回落 chat 兜底
+        set_attr("fallback_reason", exc.reason)
+        return RouteDecision(intent="chat", confidence=0.0, extracted_slots={})
     return apply_confidence_fallback(decision, settings.router_confidence_threshold)
