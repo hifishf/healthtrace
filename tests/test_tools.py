@@ -5,8 +5,9 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import delete, select
 
-from app.agent.tools import resolve_metric_date, record_metric
+from app.agent.tools import record_metric
 from app.config import settings
+from app.dates import resolve_metric_date
 from app.db import async_session
 from app.models import MetricRecord
 

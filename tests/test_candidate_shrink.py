@@ -1,11 +1,9 @@
 """候选集逐轮缩小可量化：高置信档（命中数并列最高）随追问收敛。"""
-from app.db import async_session
 from app.kb import compute_candidates, match_symptoms, top_tier_size
 
 
 async def _symptom_ids(*names: str) -> list[int]:
-    async with async_session() as session:
-        return await match_symptoms(session, list(names))
+    return await match_symptoms(list(names))
 
 
 async def test_candidate_top_tier_shrinks_golden_chain() -> None:
@@ -14,10 +12,9 @@ async def test_candidate_top_tier_shrinks_golden_chain() -> None:
     ids_round2 = await _symptom_ids("乏力", "嗜睡")
     ids_round3 = await _symptom_ids("乏力", "嗜睡", "怕冷")
 
-    async with async_session() as session:
-        round1 = await compute_candidates(session, ids_round1)
-        round2 = await compute_candidates(session, ids_round2)
-        round3 = await compute_candidates(session, ids_round3)
+    round1 = await compute_candidates(ids_round1)
+    round2 = await compute_candidates(ids_round2)
+    round3 = await compute_candidates(ids_round3)
 
     tier1 = top_tier_size(round1)
     tier2 = top_tier_size(round2)

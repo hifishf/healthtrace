@@ -11,7 +11,6 @@ from app.agent.extraction import extract_symptoms
 from app.agent.llm import get_llm
 from app.agent.red_flags import check_red_flag
 from app.config import settings
-from app.db import async_session
 from app.kb import (
     ADVICE_LEVELS,
     classify_advice_level_by_hints,
@@ -21,6 +20,7 @@ from app.kb import (
     select_followup_questions,
     top_tier_size,
 )
+from app.mcp.client import call_tool
 from app.observability import llm_span, set_attr, set_output, traced
 
 # 追问硬上限（状态机边条件，不依赖 LLM 自觉）
@@ -353,10 +353,9 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
         set_attr("triage.text", text)
         set_attr("triage.pending_question", pending_q.get("text") if pending_q else None)
 
-        async with async_session() as session:
-            loaded_portrait = await portrait.get_health_portrait(
-                session, settings.default_user_id
-            )
+        loaded_portrait = await call_tool(
+            "get_health_portrait", {"user_id": str(settings.default_user_id)}
+        )
 
         extraction = await extract_symptoms(
             text,
@@ -409,46 +408,44 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
                 ),
             }
 
-        async with async_session() as session:
-            symptom_ids = await match_symptoms(session, extraction.symptoms)
-            # 肯定回答回填：答「有」时 LLM 抽不到症状，直接用上一轮 pending 症状补上
-            if answered_verdict == "affirm" and pending_q and pending_q.get("id") is not None:
-                pending_id = int(pending_q["id"])
-                if pending_id not in symptom_ids:
-                    symptom_ids.append(pending_id)
-            names = await get_symptom_names(session, symptom_ids)
-            collected = dict(state["collected_symptoms"])
-            for symptom_id in symptom_ids:
-                collected[str(symptom_id)] = names.get(symptom_id, "")
-            collected_ids = [int(key) for key in collected]
-            # 否定回答记排除：答「没有」的症状不再追问
-            ruled_out = dict(state.get("ruled_out_symptoms", {}))
-            if (
-                answered_verdict in ("deny", "contradict")
-                and pending_q
-                and pending_q.get("id") is not None
-            ):
-                pending_id = int(pending_q["id"])
-                ruled_out[str(pending_id)] = (
-                    pending_q.get("name") or names.get(pending_id, "")
-                )
-            ruled_out_ids = [int(key) for key in ruled_out]
-            candidates = await compute_candidates(session, collected_ids)
-            set_attr("triage.collected", list(collected.values()))
-            set_attr("triage.ruled_out", list(ruled_out.values()))
-            set_attr("triage.candidate_count", len(candidates))
-            set_attr("triage.top_tier_count", top_tier_size(candidates))
-            set_attr("triage.candidates", [candidate.name for candidate in candidates])
-            # 已到追问硬上限：不再选下一问，避免最后一轮做无用的追问查询
-            pending = []
-            if state["followup_round"] < MAX_FOLLOWUP_ROUNDS:
-                pending = await select_followup_questions(
-                    session,
-                    [candidate.id for candidate in candidates],
-                    set(collected_ids),
-                    ruled_out_symptom_ids=set(ruled_out_ids),
-                    k=3,
-                )
+        symptom_ids = await match_symptoms(extraction.symptoms)
+        # 肯定回答回填：答「有」时 LLM 抽不到症状，直接用上一轮 pending 症状补上
+        if answered_verdict == "affirm" and pending_q and pending_q.get("id") is not None:
+            pending_id = int(pending_q["id"])
+            if pending_id not in symptom_ids:
+                symptom_ids.append(pending_id)
+        names = await get_symptom_names(symptom_ids)
+        collected = dict(state["collected_symptoms"])
+        for symptom_id in symptom_ids:
+            collected[str(symptom_id)] = names.get(symptom_id, "")
+        collected_ids = [int(key) for key in collected]
+        # 否定回答记排除：答「没有」的症状不再追问
+        ruled_out = dict(state.get("ruled_out_symptoms", {}))
+        if (
+            answered_verdict in ("deny", "contradict")
+            and pending_q
+            and pending_q.get("id") is not None
+        ):
+            pending_id = int(pending_q["id"])
+            ruled_out[str(pending_id)] = (
+                pending_q.get("name") or names.get(pending_id, "")
+            )
+        ruled_out_ids = [int(key) for key in ruled_out]
+        candidates = await compute_candidates(collected_ids)
+        set_attr("triage.collected", list(collected.values()))
+        set_attr("triage.ruled_out", list(ruled_out.values()))
+        set_attr("triage.candidate_count", len(candidates))
+        set_attr("triage.top_tier_count", top_tier_size(candidates))
+        set_attr("triage.candidates", [candidate.name for candidate in candidates])
+        # 已到追问硬上限：不再选下一问，避免最后一轮做无用的追问查询
+        pending = []
+        if state["followup_round"] < MAX_FOLLOWUP_ROUNDS:
+            pending = await select_followup_questions(
+                [candidate.id for candidate in candidates],
+                set(collected_ids),
+                ruled_out_symptom_ids=set(ruled_out_ids),
+                k=3,
+            )
 
         next_question = None
         if pending:

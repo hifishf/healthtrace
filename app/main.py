@@ -2,11 +2,10 @@
 from contextlib import asynccontextmanager
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import crud
 from app.agent.chat import build_chat_graph
@@ -16,7 +15,6 @@ from app.agent.stream import chat_event_stream
 from app.agent.triage import build_triage_graph, initial_triage_state
 from app.checkpoint import open_checkpointer
 from app.config import settings
-from app.db import async_session
 from app.observability import get_tracer, init_observability
 from app.schemas import (
     ChatRequest,
@@ -47,16 +45,9 @@ chat_graph = build_chat_graph()
 agent_graph = build_agent_graph(router_llm=router_llm, chat_graph=chat_graph)
 
 
-async def get_session() -> AsyncSession:
-    """请求级数据库会话依赖。"""
-    async with async_session() as session:
-        yield session
-
-
 @app.post("/metrics", response_model=MetricResponse)
 async def create_metric(
     payload: MetricCreate,
-    session: AsyncSession = Depends(get_session),
 ) -> MetricResponse:
     """写入一条指标记录（同日期同指标覆盖）。"""
     with tracer.start_as_current_span("record_metric") as root_span:
@@ -64,7 +55,6 @@ async def create_metric(
         root_span.set_attribute("langfuse.user.id", str(settings.default_user_id))
 
         record_id = await crud.upsert_metric(
-            session=session,
             user_id=settings.default_user_id,
             metric_code=payload.metric_code,
             value=payload.value,

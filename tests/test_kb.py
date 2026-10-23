@@ -26,8 +26,7 @@ async def test_match_symptoms_normalizes_colloquial() -> None:
     chest = await _symptom_id("胸痛")
     dyspnea = await _symptom_id("呼吸困难")
 
-    async with async_session() as session:
-        ids = await match_symptoms(session, ["总是累", "胸口疼", "喘不上气"])
+    ids = await match_symptoms(["总是累", "胸口疼", "喘不上气"])
 
     assert ids == [fatigue, chest, dyspnea]
 
@@ -36,8 +35,7 @@ async def test_match_symptoms_dedupes() -> None:
     """同一症状的多种说法只返回一个 id。"""
     fatigue = await _symptom_id("乏力")
 
-    async with async_session() as session:
-        ids = await match_symptoms(session, ["累", "乏力", "没力气"])
+    ids = await match_symptoms(["累", "乏力", "没力气"])
 
     assert ids == [fatigue]
 
@@ -46,8 +44,7 @@ async def test_match_symptoms_drops_unmatched() -> None:
     """无法匹配的文本被丢弃，不阻断匹配。"""
     fatigue = await _symptom_id("乏力")
 
-    async with async_session() as session:
-        ids = await match_symptoms(session, ["有点不舒服", "最近总是累"])
+    ids = await match_symptoms(["有点不舒服", "最近总是累"])
 
     assert ids == [fatigue]
 
@@ -65,8 +62,7 @@ async def test_compute_candidates_union_orders_by_match_count() -> None:
     fatigue = await _symptom_id("乏力")
     sleepy = await _symptom_id("嗜睡")
 
-    async with async_session() as session:
-        candidates = await compute_candidates(session, [fatigue, sleepy])
+    candidates = await compute_candidates([fatigue, sleepy])
 
     names = [candidate.name for candidate in candidates]
     assert set(names[:4]) == {
@@ -83,8 +79,7 @@ async def test_compute_candidates_no_overlap_still_non_empty() -> None:
     fatigue = await _symptom_id("乏力")
     diarrhea = await _symptom_id("腹泻")
 
-    async with async_session() as session:
-        candidates = await compute_candidates(session, [fatigue, diarrhea])
+    candidates = await compute_candidates([fatigue, diarrhea])
 
     names = {candidate.name for candidate in candidates}
     assert len(candidates) > 0
@@ -94,8 +89,7 @@ async def test_compute_candidates_no_overlap_still_non_empty() -> None:
 
 async def test_compute_candidates_empty_for_no_symptoms() -> None:
     """无已采集症状 -> 空候选集。"""
-    async with async_session() as session:
-        assert await compute_candidates(session, []) == []
+    assert await compute_candidates([]) == []
 
 
 async def test_compute_candidates_exposes_hit_count() -> None:
@@ -103,8 +97,7 @@ async def test_compute_candidates_exposes_hit_count() -> None:
     fatigue = await _symptom_id("乏力")
     sleepy = await _symptom_id("嗜睡")
 
-    async with async_session() as session:
-        candidates = await compute_candidates(session, [fatigue, sleepy])
+    candidates = await compute_candidates([fatigue, sleepy])
 
     assert [candidate.hit_count for candidate in candidates[:4]] == [2, 2, 2, 2]
     assert candidates[0].hit_count == 2
@@ -128,14 +121,12 @@ async def test_select_followup_questions_excludes_collected_and_orders() -> None
     fatigue = await _symptom_id("乏力")
     sleepy = await _symptom_id("嗜睡")
 
-    async with async_session() as session:
-        candidates = await compute_candidates(session, [fatigue, sleepy])
-        questions = await select_followup_questions(
-            session,
-            [candidate.id for candidate in candidates],
-            {fatigue, sleepy},
-            k=3,
-        )
+    candidates = await compute_candidates([fatigue, sleepy])
+    questions = await select_followup_questions(
+        [candidate.id for candidate in candidates],
+        {fatigue, sleepy},
+        k=3,
+    )
 
     assert len(questions) == 3
     returned_ids = {question["id"] for question in questions}

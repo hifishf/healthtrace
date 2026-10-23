@@ -7,7 +7,8 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.agent.llm import get_llm
-from app.agent.tools import metric_today, query_profile, record_metric
+from app.agent.tools import query_profile, record_metric
+from app.dates import metric_today
 
 _CHAT_TOOLS = [record_metric, query_profile]
 

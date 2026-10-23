@@ -31,11 +31,11 @@ async def test_upsert_same_day_overwrites_single_row() -> None:
         try:
             # 第一次写入 6 小时
             id1 = await crud.upsert_metric(
-                session, TEST_USER_ID, TEST_METRIC, Decimal("6"), "h", TEST_DATE
+                TEST_USER_ID, TEST_METRIC, Decimal("6"), "h", TEST_DATE
             )
             # 第二次写入 7 小时（同一天同一指标，应覆盖）
             id2 = await crud.upsert_metric(
-                session, TEST_USER_ID, TEST_METRIC, Decimal("7"), "h", TEST_DATE
+                TEST_USER_ID, TEST_METRIC, Decimal("7"), "h", TEST_DATE
             )
 
             # 两次返回同一个 id（同一行）

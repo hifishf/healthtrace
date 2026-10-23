@@ -1,9 +1,9 @@
-"""知识库确定性访问：症状匹配 / 候选集计算 / 追问选择 / 分级建议。"""
+"""知识库确定性访问：症状匹配 / 候选集计算 / 追问选择 / 分级建议（session 内部管理）。"""
 from dataclasses import dataclass
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import async_session
 from app.models import Disease, DiseaseSymptom, Symptom
 
 # 分级建议的 4 个等级（红旗 emergency 由 red_flags 单独处理，不在此列）
@@ -64,14 +64,12 @@ def _match_one(text: str, symptoms: list[Symptom]) -> int | None:
     return None
 
 
-async def match_symptoms(
-    session: AsyncSession,
-    symptom_texts: list[str],
-) -> list[int]:
+async def match_symptoms(symptom_texts: list[str]) -> list[int]:
     """把 LLM 抽取的症状文本映射为 symptoms.id（去重、按输入顺序返回）。"""
-    symptoms = (
-        await session.execute(select(Symptom).order_by(Symptom.id))
-    ).scalars().all()
+    async with async_session() as session:
+        symptoms = (
+            await session.execute(select(Symptom).order_by(Symptom.id))
+        ).scalars().all()
 
     matched: list[int] = []
     for text in symptom_texts:
@@ -81,23 +79,18 @@ async def match_symptoms(
     return matched
 
 
-async def get_symptom_names(
-    session: AsyncSession,
-    symptom_ids: list[int],
-) -> dict[int, str]:
+async def get_symptom_names(symptom_ids: list[int]) -> dict[int, str]:
     """按 id 批量取症状名，返回 {id: name}。"""
     if not symptom_ids:
         return {}
-    symptoms = (
-        await session.execute(select(Symptom).where(Symptom.id.in_(symptom_ids)))
-    ).scalars().all()
+    async with async_session() as session:
+        symptoms = (
+            await session.execute(select(Symptom).where(Symptom.id.in_(symptom_ids)))
+        ).scalars().all()
     return {symptom.id: symptom.name for symptom in symptoms}
 
 
-async def compute_candidates(
-    session: AsyncSession,
-    symptom_ids: list[int],
-) -> list[Candidate]:
+async def compute_candidates(symptom_ids: list[int]) -> list[Candidate]:
     """候选疾病集 = 匹配任一已采集症状的疾病，按命中症状数降序、id 升序排列。
 
     不用严格交集：交集一旦为空，会把「确实不舒服但症状不属于同一疾病」的患者
@@ -107,27 +100,28 @@ async def compute_candidates(
     if not symptom_ids:
         return []
 
-    rows = (
-        await session.execute(
-            select(DiseaseSymptom.disease_id, DiseaseSymptom.symptom_id).where(
-                DiseaseSymptom.symptom_id.in_(symptom_ids)
+    async with async_session() as session:
+        rows = (
+            await session.execute(
+                select(DiseaseSymptom.disease_id, DiseaseSymptom.symptom_id).where(
+                    DiseaseSymptom.symptom_id.in_(symptom_ids)
+                )
             )
-        )
-    ).all()
+        ).all()
 
-    match_count: dict[int, int] = {}
-    for disease_id, _symptom_id in rows:
-        match_count[disease_id] = match_count.get(disease_id, 0) + 1
+        match_count: dict[int, int] = {}
+        for disease_id, _symptom_id in rows:
+            match_count[disease_id] = match_count.get(disease_id, 0) + 1
 
-    if not match_count:
-        return []
+        if not match_count:
+            return []
 
-    diseases = (
-        await session.execute(
-            select(Disease).where(Disease.id.in_(match_count.keys()))
-        )
-    ).scalars().all()
-    disease_by_id = {disease.id: disease for disease in diseases}
+        diseases = (
+            await session.execute(
+                select(Disease).where(Disease.id.in_(match_count.keys()))
+            )
+        ).scalars().all()
+        disease_by_id = {disease.id: disease for disease in diseases}
 
     # 命中症状数多的排前，id 升序兜底保证确定性
     candidates = [
@@ -156,7 +150,6 @@ def top_tier_size(candidates: list[Candidate]) -> int:
 
 
 async def select_followup_questions(
-    session: AsyncSession,
     candidate_disease_ids: list[int],
     collected_symptom_ids: set[int],
     ruled_out_symptom_ids: set[int] | None = None,
@@ -175,14 +168,15 @@ async def select_followup_questions(
     if ruled_out_symptom_ids:
         excluded_ids |= set(ruled_out_symptom_ids)
 
-    stmt = select(
-        DiseaseSymptom.symptom_id, DiseaseSymptom.discrimination_weight
-    ).where(
-        DiseaseSymptom.disease_id.in_(candidate_disease_ids)
-    )
-    if excluded_ids:
-        stmt = stmt.where(DiseaseSymptom.symptom_id.notin_(excluded_ids))
-    rows = (await session.execute(stmt)).all()
+    async with async_session() as session:
+        stmt = select(
+            DiseaseSymptom.symptom_id, DiseaseSymptom.discrimination_weight
+        ).where(
+            DiseaseSymptom.disease_id.in_(candidate_disease_ids)
+        )
+        if excluded_ids:
+            stmt = stmt.where(DiseaseSymptom.symptom_id.notin_(excluded_ids))
+        rows = (await session.execute(stmt)).all()
 
     best_weight: dict[int, int] = {}
     for symptom_id, weight in rows:
@@ -195,9 +189,10 @@ async def select_followup_questions(
     if not top_ids:
         return []
 
-    symptoms = (
-        await session.execute(select(Symptom).where(Symptom.id.in_(top_ids)))
-    ).scalars().all()
+    async with async_session() as session:
+        symptoms = (
+            await session.execute(select(Symptom).where(Symptom.id.in_(top_ids)))
+        ).scalars().all()
     name_by_id = {symptom.id: symptom.name for symptom in symptoms}
 
     return [
