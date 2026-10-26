@@ -51,13 +51,19 @@ def resolve_subject(text: str, llm_subject: str) -> str:
 def build_system_prompt(
     portrait_summary: str | None = None,
     pending_question: str | None = None,
+    recent_memory: str | None = None,
 ) -> str:
-    """构造症状抽取的系统提示词；有画像摘要/上一轮追问时追加到上下文里。"""
+    """构造症状抽取的系统提示词；有画像摘要/近期会话记忆/上一轮追问时追加到上下文里。"""
     prompt = SYSTEM_PROMPT
     if portrait_summary:
         prompt += (
             f"\n\n用户健康画像：{portrait_summary}。"
             "抽取症状时可参考，但不要因为画像就臆造症状。"
+        )
+    if recent_memory:
+        prompt += (
+            f"\n\n近期会话记忆：\n{recent_memory}\n"
+            "以上是之前会话已确认过的事实，不要重复追问。"
         )
     if pending_question:
         prompt += (
@@ -76,11 +82,13 @@ async def extract_symptoms(
     llm: BaseChatModel,
     portrait_summary: str | None = None,
     pending_question: str | None = None,
+    recent_memory: str | None = None,
 ) -> SymptomExtraction:
     """对一句话抽取症状 + 主体（LLM 结构化输出，主体经确定性兜底修正）。
 
     portrait_summary 为画像一行摘要；pending_question 为上一轮追问，
-    用于让 LLM 判定这句话是肯定/否定/相反/无关/不清楚。
+    用于让 LLM 判定这句话是肯定/否定/相反/无关/不清楚；recent_memory 为
+    近期情景记忆摘要，用于避免重复追问已确认过的事实。
     """
     with llm_span(
         "llm.triage.extract_symptoms",
@@ -95,7 +103,9 @@ async def extract_symptoms(
             runnable,
             [
                 SystemMessage(
-                    content=build_system_prompt(portrait_summary, pending_question)
+                    content=build_system_prompt(
+                        portrait_summary, pending_question, recent_memory
+                    )
                 ),
                 HumanMessage(content=text),
             ],

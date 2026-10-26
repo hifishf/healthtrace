@@ -83,3 +83,20 @@ async def delete_episodic(user_id: UUID, memory_id: int) -> bool:
         )
         await session.commit()
         return result.rowcount > 0
+
+
+def summarize_episodic(memories: list[dict]) -> str:
+    """把最近情景记忆压成一段中文摘要，供新会话注入；无记录返回空串。"""
+    lines: list[str] = []
+    for item in memories[:5]:
+        subgraph = item.get("subgraph", "")
+        pieces: list[str] = []
+        summary = (item.get("summary") or "").strip()
+        if summary:
+            pieces.append(summary)
+        symptom_text = (item.get("symptom_text") or "").strip()
+        if symptom_text:
+            pieces.append(f"症状：{symptom_text}")
+        if pieces:
+            lines.append(f"[{subgraph}] " + "；".join(pieces))
+    return "\n".join(lines)

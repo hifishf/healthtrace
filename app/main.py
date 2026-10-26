@@ -160,9 +160,19 @@ async def agent(payload: AgentRequest, request: Request) -> AgentResponse:
 
 @app.post("/chat/stream")
 async def chat_stream(payload: ChatRequest) -> StreamingResponse:
-    """SSE 流式对话：route -> chat token 片段 -> done。"""
+    """SSE 流式对话：route -> chat token 片段 -> done，并在结束时落情景记忆。"""
+
+    async def record_done(intent: str, reply: str) -> None:
+        await memory.record_episodic(
+            user_id=get_current_user_id(),
+            subgraph=intent,
+            user_text=payload.text,
+            summary=reply,
+            payload={"intent": intent, "reply": reply},
+        )
+
     return StreamingResponse(
-        chat_event_stream(payload.text, router_llm, chat_graph),
+        chat_event_stream(payload.text, router_llm, chat_graph, on_done=record_done),
         media_type="text/event-stream",
     )
 

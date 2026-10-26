@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
 
-from app import portrait
+from app import memory, portrait
 from app.agent.budget import TokenBudget
 from app.agent.extraction import extract_symptoms
 from app.agent.llm import LLMUnavailable, get_llm, invoke_llm
@@ -407,6 +407,8 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
             "get_health_portrait", {"user_id": str(get_current_user_id())}
         )
         portrait_text = portrait.summarize(loaded_portrait)
+        recent_memories = await memory.list_episodic(get_current_user_id(), limit=5)
+        recent_memory_text = memory.summarize_episodic(recent_memories)
         budget = TokenBudget(
             settings.llm_session_token_budget, used=state.get("llm_tokens_used", 0)
         )
@@ -418,6 +420,7 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
                 llm,
                 portrait_summary=portrait_text,
                 pending_question=pending_q.get("text") if pending_q else None,
+                recent_memory=recent_memory_text,
             )
             budget.consume(
                 budget.estimate(

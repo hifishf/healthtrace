@@ -6,17 +6,23 @@ from langchain_core.runnables import Runnable
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from app import portrait
 from app.agent.llm import get_llm
 from app.agent.tools import query_profile, record_medication, record_metric
 from app.dates import metric_today
+from app.identity import get_current_user_id
+from app.mcp.client import call_tool
 
 _CHAT_TOOLS = [record_metric, query_profile, record_medication]
 
 
-def build_chat_system_prompt(today: datetime.date | None = None) -> str:
-    """构造带业务日期口径的 chat 系统提示。"""
+def build_chat_system_prompt(
+    today: datetime.date | None = None,
+    portrait_summary: str | None = None,
+) -> str:
+    """构造带业务日期口径 + 可选画像摘要的 chat 系统提示。"""
     current_date = today or metric_today()
-    return f"""你是 HealthTrace 的健康管理助手。
+    prompt = f"""你是 HealthTrace 的健康管理助手。
 当前日期是 {current_date.isoformat()}，业务时区为 Asia/Shanghai。
 
 记录健康指标时必须遵守：
@@ -25,24 +31,51 @@ def build_chat_system_prompt(today: datetime.date | None = None) -> str:
 2. 不要在模型侧把相对日期换算成 YYYY-MM-DD，工具会按当前日期确定换算。
 3. 只有用户完全没有提到日期时才省略 date；无法判断日期时先询问用户。
 """
+    if portrait_summary:
+        prompt += (
+            f"\n用户健康画像：{portrait_summary}。"
+            "已确认的病情、用药、过敏不要重复询问。"
+        )
+    return prompt
 
 
-def build_chat_graph(model: Runnable | None = None):
+async def _default_portrait_loader() -> str:
+    """默认画像加载：经 MCP 读画像并压成摘要；失败或为空时返回空串。"""
+    try:
+        loaded = await call_tool(
+            "get_health_portrait", {"user_id": str(get_current_user_id())}
+        )
+    except Exception:
+        return ""
+    summary = portrait.summarize(loaded or {})
+    return "" if summary == "暂无画像信息" else summary
+
+
+def build_chat_graph(model: Runnable | None = None, portrait_loader=None):
     """构建 chat 子图：agent 节点（LLM 绑定工具）+ tools 节点（ToolNode）。
 
     model 为可选注入：生产走 get_llm().bind_tools(...)，测试注入 fake 模型，
-    从而在不开真 LLM 的情况下验证「工具被调用 + 循环闭环」。
+    从而在不开真 LLM 的情况下验证「工具被调用 + 循环闭环」；portrait_loader
+    为可选注入的画像摘要加载器，默认经 MCP 读画像。
     """
     if model is None:
         model = get_llm().bind_tools(_CHAT_TOOLS)
+    if portrait_loader is None:
+        portrait_loader = _default_portrait_loader
 
     graph = StateGraph(MessagesState)
 
     async def agent(state: MessagesState) -> dict:
         # 数据准备：把当前状态消息交给模型，得到下一步 AIMessage
         # 模型可能直接回复，也可能返回 tool_calls。
+        try:
+            portrait_text = await portrait_loader()
+        except Exception:
+            portrait_text = ""
         messages = [
-            SystemMessage(content=build_chat_system_prompt()),
+            SystemMessage(
+                content=build_chat_system_prompt(portrait_summary=portrait_text or None)
+            ),
             *state["messages"],
         ]
         message = await model.ainvoke(messages)

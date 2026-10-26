@@ -19,12 +19,14 @@ async def chat_event_stream(
     text: str,
     router_llm: BaseChatModel,
     chat_graph,
+    on_done=None,
 ) -> AsyncIterator[str]:
     """按顺序产出 route / chat / done 三类 SSE 事件。
 
     Router 非流式跑一次；chat 意图用 astream(stream_mode="messages")
     逐 token 产出最终回复。过滤掉 ToolMessage 与空内容，
-    只把最终回复的 token 作为 chat 事件推给前端。
+    只把最终回复的 token 作为 chat 事件推给前端。on_done 为可选回调
+    （async (intent, reply) -> None），在 done 之后调用（供端点落库）。
     """
     decision = await route(text, router_llm)
     yield sse_event(
@@ -49,7 +51,10 @@ async def chat_event_stream(
         reply_parts.append(reply)
         yield sse_event("chat", reply)
 
+    done_reply = "".join(reply_parts)
     yield sse_event(
         "done",
-        {"intent": decision.intent, "reply": "".join(reply_parts)},
+        {"intent": decision.intent, "reply": done_reply},
     )
+    if on_done is not None:
+        await on_done(decision.intent, done_reply)
