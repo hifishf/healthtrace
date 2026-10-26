@@ -12,6 +12,7 @@ dependencies = [
     "asyncpg>=0.29",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.4",
+    "redis>=5.0",
     "streamlit>=1.38",
     "requests>=2.31",
     "opentelemetry-sdk>=1.20",

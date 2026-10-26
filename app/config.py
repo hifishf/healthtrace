@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     checkpoint_database_url: str = "postgresql://healthtrace:healthtrace@localhost:5432/healthtrace"
     # Redis（docker-compose 里的 cache 服务，宿主端口 6380）
     redis_url: str = "redis://localhost:6380/0"
+    # 会话工作记忆默认 TTL（秒）：到期自动清理，会话结束也会显式清除
+    working_memory_ttl_seconds: int = 3600
     # Langfuse 自托管（第 5 步接 OTel 用）
     langfuse_host: str = "http://localhost:3000"
     langfuse_public_key: str = ""

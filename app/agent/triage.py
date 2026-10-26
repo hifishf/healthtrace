@@ -2,6 +2,7 @@
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import interrupt
@@ -24,6 +25,7 @@ from app.kb import (
 )
 from app.mcp.client import call_tool
 from app.observability import llm_span, set_attr, set_output, traced
+from app.working_memory import working_memory
 
 # 追问硬上限（状态机边条件，不依赖 LLM 自觉）
 MAX_FOLLOWUP_ROUNDS = 3
@@ -87,6 +89,13 @@ _OPPOSITE_PAIRS: tuple[tuple[str, str], ...] = (
     ("减少", "增加"),
     ("降低", "升高"),
 )
+
+
+def _config_thread_id(config: RunnableConfig | None) -> str | None:
+    """从图运行配置里取 thread_id（工作记忆按它做键，与 checkpointer 同源）。"""
+    if not config:
+        return None
+    return (config.get("configurable") or {}).get("thread_id")
 
 
 def answer_polarity(answer: str) -> str:
@@ -330,11 +339,15 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
         )
 
     @traced("graph.triage.advise")
-    async def advise_node(state: TriageState) -> dict:
+    async def advise_node(state: TriageState, config: RunnableConfig) -> dict:
         """生成最终分级建议：级别由确定性规则算，措辞由 LLM 转写（失败回退模板）。"""
         budget = TokenBudget(
             settings.llm_session_token_budget, used=state.get("llm_tokens_used", 0)
         )
+        # 会话到此结束：清除本轮工作记忆（TTL 是兜底，这里是显式结束清理）
+        thread_id = _config_thread_id(config)
+        if thread_id:
+            await working_memory.clear(get_current_user_id(), thread_id)
         if state.get("final_advice") is not None:
             set_attr("triage.level", state["final_advice"].get("level"))
             return {"llm_tokens_used": budget.used}
@@ -383,7 +396,7 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
         }
 
     @traced("graph.triage.extract")
-    async def extract_node(state: TriageState) -> dict:
+    async def extract_node(state: TriageState, config: RunnableConfig) -> dict:
         """入口：加载画像 -> 抽症状 -> 红旗/主体边界 -> 归一化 -> 候选集 -> 选下一问。"""
         text = state["messages"][-1].content
         pending_q = state.get("pending_question")
@@ -540,6 +553,16 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
                 "text": question_text,
             }
         set_attr("triage.next_question", next_question["text"] if next_question else None)
+
+        # 每轮把「轮次 + 已采集槽位」写进 Redis 工作记忆（业务会话态，与 checkpointer 分离）
+        thread_id = _config_thread_id(config)
+        if thread_id:
+            await working_memory.set(
+                get_current_user_id(),
+                thread_id,
+                round_=state["followup_round"],
+                collected_slots=list(collected.values()),
+            )
 
         return {
             "health_portrait": loaded_portrait,
