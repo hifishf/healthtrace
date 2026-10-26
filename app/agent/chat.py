@@ -7,10 +7,10 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from app.agent.llm import get_llm
-from app.agent.tools import query_profile, record_metric
+from app.agent.tools import query_profile, record_medication, record_metric
 from app.dates import metric_today
 
-_CHAT_TOOLS = [record_metric, query_profile]
+_CHAT_TOOLS = [record_metric, query_profile, record_medication]
 
 
 def build_chat_system_prompt(today: datetime.date | None = None) -> str:

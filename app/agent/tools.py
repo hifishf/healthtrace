@@ -45,3 +45,34 @@ async def query_profile() -> dict:
     return await call_tool(
         "get_health_portrait", {"user_id": str(get_current_user_id())}
     )
+
+
+@tool
+async def record_medication(
+    name: str,
+    dosage: str | None = None,
+    frequency: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> dict:
+    """记录一条当前用户在吃的药（或保健品）。
+
+    参数：
+    - name：药名，例如 二甲双胍。
+    - dosage：剂量，例如 500mg；不知道可不填。
+    - frequency：频次，例如 每日两次；不知道可不填。
+    - start_date / end_date：开始/停止日期（YYYY-MM-DD）；不知道可不填。
+    示例：用户说「我在吃二甲双胍」→ record_medication(name="二甲双胍")。
+    返回 {ok: true, id, ...} 或 {ok: false, error_code}。
+    """
+    return await call_tool(
+        "record_medication",
+        {
+            "user_id": str(get_current_user_id()),
+            "name": name,
+            "dosage": dosage,
+            "frequency": frequency,
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+    )

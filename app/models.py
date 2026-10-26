@@ -175,3 +175,88 @@ class Medication(Base):
     active: Mapped[bool | None] = mapped_column(
         Boolean, server_default=text("true"), nullable=True, comment="是否在服，默认 true"
     )
+
+
+class Condition(Base):
+    """病情（用户已知健康问题，画像语义记忆；与知识库 diseases 表不同）。"""
+
+    __tablename__ = "conditions"
+    __table_args__ = {"comment": "病情（用户已知健康问题，画像语义记忆；与知识库 diseases 表不同）"}
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid, nullable=False, index=True, comment="用户唯一标识"
+    )
+    condition_name: Mapped[str] = mapped_column(
+        String(200), nullable=False, comment="病情名称（如 高血压、2型糖尿病）"
+    )
+    diagnosed_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True, comment="确诊日期"
+    )
+    status: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="状态（active在患/remission缓解/resolved已愈）"
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="备注")
+
+
+class Allergy(Base):
+    """过敏（用户过敏原画像，语义记忆）。"""
+
+    __tablename__ = "allergies"
+    __table_args__ = {"comment": "过敏（用户过敏原画像，语义记忆）"}
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid, nullable=False, index=True, comment="用户唯一标识"
+    )
+    allergen: Mapped[str] = mapped_column(
+        String(200), nullable=False, comment="过敏原（如 青霉素、花生）"
+    )
+    severity: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="严重程度（mild/moderate/severe）"
+    )
+    reaction: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, comment="过敏反应表现（如 皮疹、呼吸困难）"
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="备注")
+
+
+class Preference(Base):
+    """偏好（用户长期偏好，画像语义记忆）。"""
+
+    __tablename__ = "preferences"
+    __table_args__ = {"comment": "偏好（用户长期偏好，画像语义记忆）"}
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid, nullable=False, index=True, comment="用户唯一标识"
+    )
+    preference_key: Mapped[str] = mapped_column(
+        String(100), nullable=False, comment="偏好键（如 沟通风格、饮食偏好）"
+    )
+    preference_value: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, comment="偏好值"
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="备注")
+
+
+class Followup(Base):
+    """待跟进事项（用户后续动作，画像语义记忆）。"""
+
+    __tablename__ = "followups"
+    __table_args__ = {"comment": "待跟进事项（用户后续动作，画像语义记忆）"}
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid, nullable=False, index=True, comment="用户唯一标识"
+    )
+    item: Mapped[str] = mapped_column(
+        String(200), nullable=False, comment="待跟进事项内容"
+    )
+    due_date: Mapped[date | None] = mapped_column(
+        Date, nullable=True, comment="计划跟进日期"
+    )
+    status: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="状态（pending待处理/done已完成）"
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="备注")

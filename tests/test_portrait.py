@@ -26,7 +26,7 @@ async def _cleanup_metric() -> None:
 
 
 async def test_get_health_portrait_returns_seed_fields() -> None:
-    """读画像返回种子用户的结构化字段。"""
+    """读画像返回种子用户的完整结构：基础字段 + 五个子表列表。"""
     result = await portrait.get_health_portrait(settings.default_user_id)
     assert result["user_id"] == str(settings.default_user_id)
     assert set(result.keys()) == {
@@ -37,6 +37,11 @@ async def test_get_health_portrait_returns_seed_fields() -> None:
         "weight_kg",
         "bmi",
         "updated_at",
+        "conditions",
+        "medications",
+        "allergies",
+        "preferences",
+        "followups",
     }
 
 

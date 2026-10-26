@@ -103,3 +103,141 @@ async def record_metric(
         "unit": unit,
         "date": record_date.isoformat(),
     }
+
+
+def _parse_date(value: str | None) -> date | None:
+    """把 ISO 日期字符串解析为 date；空值返回 None，非法抛 ValueError。"""
+    return date.fromisoformat(value) if value else None
+
+
+@mcp.tool
+async def record_medication(
+    user_id: str,
+    name: str,
+    dosage: str | None = None,
+    frequency: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    active: bool = True,
+) -> dict:
+    """新增一条用药记录（如「在吃二甲双胍」），返回 {"ok": true, "id": ...}。"""
+    if not name or not name.strip():
+        return {"ok": False, "error_code": "INVALID_NAME"}
+
+    try:
+        start = _parse_date(start_date)
+        end = _parse_date(end_date)
+    except ValueError:
+        return {"ok": False, "error_code": "INVALID_DATE"}
+
+    record_id = await crud.add_medication(
+        user_id=UUID(user_id),
+        name=name.strip(),
+        dosage=dosage,
+        frequency=frequency,
+        start_date=start,
+        end_date=end,
+        active=active,
+    )
+    await portrait.touch_portrait(UUID(user_id))
+    return {"ok": True, "id": record_id, "name": name.strip()}
+
+
+@mcp.tool
+async def record_condition(
+    user_id: str,
+    condition_name: str,
+    diagnosed_date: str | None = None,
+    status: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """新增一条病情记录（如 高血压、2型糖尿病），返回 {"ok": true, "id": ...}。"""
+    if not condition_name or not condition_name.strip():
+        return {"ok": False, "error_code": "INVALID_CONDITION_NAME"}
+
+    try:
+        diagnosed = _parse_date(diagnosed_date)
+    except ValueError:
+        return {"ok": False, "error_code": "INVALID_DATE"}
+
+    record_id = await crud.add_condition(
+        user_id=UUID(user_id),
+        condition_name=condition_name.strip(),
+        diagnosed_date=diagnosed,
+        status=status,
+        notes=notes,
+    )
+    await portrait.touch_portrait(UUID(user_id))
+    return {"ok": True, "id": record_id, "condition_name": condition_name.strip()}
+
+
+@mcp.tool
+async def record_allergy(
+    user_id: str,
+    allergen: str,
+    severity: str | None = None,
+    reaction: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """新增一条过敏记录（如 青霉素过敏），返回 {"ok": true, "id": ...}。"""
+    if not allergen or not allergen.strip():
+        return {"ok": False, "error_code": "INVALID_ALLERGEN"}
+
+    record_id = await crud.add_allergy(
+        user_id=UUID(user_id),
+        allergen=allergen.strip(),
+        severity=severity,
+        reaction=reaction,
+        notes=notes,
+    )
+    await portrait.touch_portrait(UUID(user_id))
+    return {"ok": True, "id": record_id, "allergen": allergen.strip()}
+
+
+@mcp.tool
+async def record_preference(
+    user_id: str,
+    preference_key: str,
+    preference_value: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """新增一条偏好记录（如 沟通风格=简洁），返回 {"ok": true, "id": ...}。"""
+    if not preference_key or not preference_key.strip():
+        return {"ok": False, "error_code": "INVALID_PREFERENCE_KEY"}
+
+    record_id = await crud.add_preference(
+        user_id=UUID(user_id),
+        preference_key=preference_key.strip(),
+        preference_value=preference_value,
+        notes=notes,
+    )
+    await portrait.touch_portrait(UUID(user_id))
+    return {"ok": True, "id": record_id, "preference_key": preference_key.strip()}
+
+
+@mcp.tool
+async def record_followup(
+    user_id: str,
+    item: str,
+    due_date: str | None = None,
+    status: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    """新增一条待跟进事项（如 三个月后复查血糖），返回 {"ok": true, "id": ...}。"""
+    if not item or not item.strip():
+        return {"ok": False, "error_code": "INVALID_ITEM"}
+
+    try:
+        due = _parse_date(due_date)
+    except ValueError:
+        return {"ok": False, "error_code": "INVALID_DATE"}
+
+    record_id = await crud.add_followup(
+        user_id=UUID(user_id),
+        item=item.strip(),
+        due_date=due,
+        status=status,
+        notes=notes,
+    )
+    await portrait.touch_portrait(UUID(user_id))
+    return {"ok": True, "id": record_id, "item": item.strip()}
