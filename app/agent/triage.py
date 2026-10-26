@@ -12,6 +12,7 @@ from app.agent.extraction import extract_symptoms
 from app.agent.llm import LLMUnavailable, get_llm, invoke_llm
 from app.agent.red_flags import check_red_flag
 from app.config import settings
+from app.identity import get_current_user_id
 from app.kb import (
     ADVICE_LEVELS,
     classify_advice_level_by_hints,
@@ -390,7 +391,7 @@ def build_triage_graph(llm=None, writer_llm=None, checkpointer=None):
         set_attr("triage.pending_question", pending_q.get("text") if pending_q else None)
 
         loaded_portrait = await call_tool(
-            "get_health_portrait", {"user_id": str(settings.default_user_id)}
+            "get_health_portrait", {"user_id": str(get_current_user_id())}
         )
         portrait_text = portrait.summarize(loaded_portrait)
         budget = TokenBudget(

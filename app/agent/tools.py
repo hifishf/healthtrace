@@ -1,7 +1,7 @@
 """Agent 工具：把落库/查画像能力包装成 LLM 可调用的函数（经 MCP 客户端访问数据）。"""
 from langchain_core.tools import tool
 
-from app.config import settings
+from app.identity import get_current_user_id
 from app.mcp.client import call_tool
 
 
@@ -27,7 +27,7 @@ async def record_metric(
     return await call_tool(
         "record_metric",
         {
-            "user_id": str(settings.default_user_id),
+            "user_id": str(get_current_user_id()),
             "metric_code": metric_code,
             "value": value,
             "unit": unit,
@@ -43,5 +43,5 @@ async def query_profile() -> dict:
     无参数（单用户）。返回画像字段 dict；无画像时返回空 dict。
     """
     return await call_tool(
-        "get_health_portrait", {"user_id": str(settings.default_user_id)}
+        "get_health_portrait", {"user_id": str(get_current_user_id())}
     )
