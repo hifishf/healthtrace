@@ -1,4 +1,8 @@
-"""父图：Router 结构化输出 -> 按意图路由到 chat 子图或占位节点。"""
+"""父图（遗留 chat 路径）：Router 结构化输出 -> chat 子图或占位节点。
+
+统一入口见 app/agent/entry.py 的 dispatch：那里把 triage 也路由到追问分诊子图；
+本父图仅供非流式 /chat 使用，triage/insight/report 均回占位。
+"""
 from typing import Annotated, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -10,7 +14,7 @@ from app.agent.chat import build_chat_graph
 from app.agent.llm import get_llm
 from app.agent.router import route
 
-# 占位回复：triage/insight/report 子图本周未实现
+# 占位回复：insight/report 子图未实现（triage 由统一入口 /agent 分发）
 _STUB_TEMPLATE = "你这句话被路由到「{intent}」意图，该能力将在后续周实现，本周暂不支持。"
 
 

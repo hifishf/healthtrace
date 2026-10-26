@@ -79,6 +79,32 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+class AgentRequest(BaseModel):
+    """POST /agent 请求体：统一入口的一句话 + 可选 thread_id（triage 多轮续跑用）。"""
+
+    text: str = Field(min_length=1)
+    thread_id: str | None = None
+
+
+class AgentResponse(BaseModel):
+    """POST /agent 响应：按意图分发后的统一结果。
+
+    kind 取值：reply（chat 最终回复）/ question（triage 追问）/ advice（triage 建议）/
+    stub（insight/report 占位）。
+    """
+
+    intent: str
+    kind: Literal["reply", "question", "advice", "stub"]
+    reply: str | None = None
+    thread_id: str | None = None
+    question: str | None = None
+    final_advice: dict | None = None
+    red_flag_triggered: bool = False
+    candidate_count: int = 0
+    top_tier_count: int = 0
+    candidate_conditions: list[dict] = Field(default_factory=list)
+
+
 class TriageRequest(BaseModel):
     """POST /triage 请求体：症状描述 + 可选 thread_id（多轮续跑用）。"""
 

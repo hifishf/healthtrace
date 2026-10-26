@@ -9,6 +9,7 @@ from langgraph.types import Command
 
 from app import crud
 from app.agent.chat import build_chat_graph
+from app.agent.entry import dispatch
 from app.agent.graph import build_agent_graph
 from app.agent.llm import get_llm
 from app.agent.stream import chat_event_stream
@@ -17,6 +18,8 @@ from app.checkpoint import open_checkpointer
 from app.config import settings
 from app.observability import get_tracer, init_observability
 from app.schemas import (
+    AgentRequest,
+    AgentResponse,
     ChatRequest,
     ChatResponse,
     MetricCreate,
@@ -93,6 +96,25 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             confidence=result["confidence"],
             reply=reply,
         )
+
+
+@app.post("/agent", response_model=AgentResponse)
+async def agent(payload: AgentRequest, request: Request) -> AgentResponse:
+    """统一入口：按意图把一句话路由到 chat / triage（insight / report 回 stub）。"""
+    with tracer.start_as_current_span("agent") as root_span:
+        root_span.set_attribute("langfuse.trace.name", "统一入口")
+        root_span.set_attribute("langfuse.user.id", str(settings.default_user_id))
+
+        result = await dispatch(
+            payload.text,
+            router_llm=router_llm,
+            chat_graph=chat_graph,
+            triage_graph=request.app.state.triage_graph,
+            thread_id=payload.thread_id,
+        )
+        if result.get("thread_id"):
+            root_span.set_attribute("langfuse.session.id", result["thread_id"])
+        return AgentResponse(**result)
 
 
 @app.post("/chat/stream")
