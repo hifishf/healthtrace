@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastmcp import FastMCP
 
-from app import crud, portrait
+from app import crud, memory, portrait
 from app.dates import resolve_metric_date
 
 mcp = FastMCP("HealthTrace Data")
@@ -241,3 +241,21 @@ async def record_followup(
     )
     await portrait.touch_portrait(UUID(user_id))
     return {"ok": True, "id": record_id, "item": item.strip()}
+
+
+@mcp.tool
+async def list_episodic_memories(
+    user_id: str,
+    subgraph: str | None = None,
+    limit: int = 20,
+) -> dict:
+    """按用户检索情景记忆（可按 subgraph 过滤，按时间倒序），返回 {"memories": [...]}。"""
+    memories = await memory.list_episodic(UUID(user_id), subgraph=subgraph, limit=limit)
+    return {"memories": memories}
+
+
+@mcp.tool
+async def delete_episodic_memory(user_id: str, memory_id: int) -> dict:
+    """按用户 + 记录 id 删除一条情景记忆，返回 {"ok": true, "deleted": bool}。"""
+    deleted = await memory.delete_episodic(UUID(user_id), memory_id)
+    return {"ok": True, "deleted": deleted}

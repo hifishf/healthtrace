@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
-from app import crud
+from app import crud, memory
 from app.agent.chat import build_chat_graph
 from app.agent.entry import dispatch
 from app.agent.graph import build_agent_graph
@@ -47,6 +47,24 @@ tracer = get_tracer()
 router_llm = get_llm()
 chat_graph = build_chat_graph()
 agent_graph = build_agent_graph(router_llm=router_llm, chat_graph=chat_graph)
+
+
+def _agent_summary(result: dict) -> str | None:
+    """从统一入口结果里取一句摘要（chat/stub 取 reply，triage 取追问或建议）。"""
+    if result.get("kind") in ("reply", "stub"):
+        return result.get("reply")
+    if result.get("kind") == "question":
+        return result.get("question")
+    advice = result.get("final_advice")
+    return advice.get("suggestion") if advice else None
+
+
+def _conditions_text(advice: dict | None) -> str | None:
+    """把 final_advice 里的候选方向拼成文本（情景记忆的 symptom_text 用）。"""
+    if not advice:
+        return None
+    conditions = advice.get("conditions") or []
+    return "、".join(conditions) if conditions else None
 
 
 @app.post("/metrics", response_model=MetricResponse)
@@ -91,6 +109,17 @@ async def chat(payload: ChatRequest) -> ChatResponse:
             {"messages": [HumanMessage(content=payload.text)]}
         )
         reply = result["messages"][-1].content
+        await memory.record_episodic(
+            user_id=get_current_user_id(),
+            subgraph=result.get("intent", "chat"),
+            user_text=payload.text,
+            summary=reply,
+            payload={
+                "intent": result.get("intent"),
+                "confidence": result.get("confidence"),
+                "reply": reply,
+            },
+        )
 
         return ChatResponse(
             intent=result["intent"],
@@ -115,6 +144,17 @@ async def agent(payload: AgentRequest, request: Request) -> AgentResponse:
         )
         if result.get("thread_id"):
             root_span.set_attribute("langfuse.session.id", result["thread_id"])
+        await memory.record_episodic(
+            user_id=get_current_user_id(),
+            subgraph=result["intent"],
+            session_id=result.get("thread_id"),
+            user_text=payload.text,
+            summary=_agent_summary(result),
+            symptom_text=_conditions_text(result.get("final_advice")),
+            final_level=(result.get("final_advice") or {}).get("level"),
+            red_flag_triggered=result.get("red_flag_triggered"),
+            payload=result,
+        )
         return AgentResponse(**result)
 
 
@@ -148,6 +188,26 @@ async def triage(payload: TriageRequest, request: Request) -> TriageResponse:
     candidate_conditions = result.get("candidate_conditions", [])
     candidate_count = result.get("candidate_count", len(candidate_conditions))
     top_tier_count = result.get("top_tier_count", 0)
+    advice = result.get("final_advice")
+    await memory.record_episodic(
+        user_id=get_current_user_id(),
+        subgraph="triage",
+        session_id=thread_id,
+        user_text=payload.text,
+        summary=(
+            interrupts[0].value.get("question")
+            if interrupts
+            else (advice or {}).get("suggestion")
+        ),
+        symptom_text=_conditions_text(advice),
+        final_level=(advice or {}).get("level"),
+        red_flag_triggered=result.get("red_flag_triggered", False),
+        payload={
+            "kind": "question" if interrupts else "advice",
+            "final_advice": advice,
+            "candidate_conditions": candidate_conditions,
+        },
+    )
     if interrupts:
         return TriageResponse(
             thread_id=thread_id,

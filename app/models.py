@@ -18,6 +18,7 @@ from sqlalchemy import (
     Uuid,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -260,3 +261,47 @@ class Followup(Base):
         String(20), nullable=True, comment="状态（pending待处理/done已完成）"
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="备注")
+
+
+class EpisodicMemory(Base):
+    """统一会话/情景记忆（chat/triage/insight/report 每次交互一条）。"""
+
+    __tablename__ = "episodic_memories"
+    __table_args__ = {
+        "comment": "统一会话/情景记忆（chat/triage/insight/report 每次交互一条）"
+    }
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid, nullable=False, index=True, comment="用户唯一标识"
+    )
+    subgraph: Mapped[str] = mapped_column(
+        String(20), nullable=False, comment="子图类型：chat/triage/insight/report"
+    )
+    session_id: Mapped[str | None] = mapped_column(
+        String(100), nullable=True, comment="会话标识（triage 的 thread_id，chat 等无则空）"
+    )
+    user_text: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="用户原始输入"
+    )
+    summary: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="本轮回复/追问/建议摘要"
+    )
+    symptom_text: Mapped[str | None] = mapped_column(
+        Text, nullable=True, comment="已确认症状文本（triage 专用）"
+    )
+    final_level: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="分级建议等级（triage 专用）"
+    )
+    red_flag_triggered: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True, comment="是否触发红旗（triage 专用）"
+    )
+    payload: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True, comment="子图专属结构化结果（JSONB）"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        comment="创建时间",
+    )
