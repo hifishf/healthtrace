@@ -37,10 +37,7 @@ jobs:
           python -m pip install --upgrade uv
           uv sync --all-groups
       - name: 初始化数据库结构
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client
-          psql "postgresql://healthtrace:healthtrace@localhost:5432/healthtrace" -f schema/init.sql
+        run: .venv/bin/alembic upgrade head
       - name: 灌种子数据
         run: .venv/bin/python scripts/seed_knowledge.py
       - name: 跑确定性测试（红线）
@@ -74,10 +71,7 @@ jobs:
           python -m pip install --upgrade uv
           uv sync --all-groups
       - name: 初始化数据库结构
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client
-          psql "postgresql://healthtrace:healthtrace@localhost:5432/healthtrace" -f schema/init.sql
+        run: .venv/bin/alembic upgrade head
       - name: 灌种子数据
         run: .venv/bin/python scripts/seed_knowledge.py
       - name: 语义评估（PR/main 抽样 5，定时全量）
