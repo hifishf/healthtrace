@@ -58,7 +58,8 @@ class _CaptureStructuredRunnable:
 
 class _CaptureLLM:
     def with_structured_output(self, schema, method):
-        return _CaptureStructuredRunnable()
+        self.runnable = _CaptureStructuredRunnable()
+        return self.runnable
 
 
 async def test_triage_injects_portrait_and_recent_memory_across_sessions() -> None:
