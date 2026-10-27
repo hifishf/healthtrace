@@ -132,3 +132,65 @@ def grade_correlation(r: float, n: int) -> str:
     if abs_r >= WEAK_R:
         return "弱相关"
     return "不足以判断"
+
+
+# 因果断言词的确定性替换（输出前兜底；冻结契约只要求 导致/因为/引起 -> 相关/伴随，
+# 确诊/诊断 来自 13.1 断言 #14 的禁用词，一并替换）
+CAUSAL_REPLACEMENTS = {
+    "导致": "相关",
+    "引起": "伴随",
+    "因为": "相关",
+    "确诊": "相关",
+    "诊断": "相关",
+}
+FORBIDDEN_CAUSAL_WORDS = frozenset(CAUSAL_REPLACEMENTS)
+
+
+def filter_causal_wording(text: str) -> str:
+    """确定性替换因果断言词（输出前兜底），保证结果不含 导致/引起/因为/确诊/诊断。"""
+    result = text
+    for word, replacement in CAUSAL_REPLACEMENTS.items():
+        result = result.replace(word, replacement)
+    return result
+
+
+def build_template_explanation(
+    correlation: LagCorrelation,
+    label_a: str,
+    label_b: str,
+    synthetic: bool,
+) -> str:
+    """把统计结果渲染成一句中文（确定性模板，LLM 失败时的兜底，同样经措辞过滤）。
+    口径：synthetic=True 才给出相关强度 + N + p；synthetic=False 只描述趋势、
+    不做显著性断言、不写强/弱相关分级。相关方向用正/负，趋势方向用同向/反向。
+    :param correlation: 第 3 步算出的最佳滞后统计
+    :param label_a: 预测指标中文名（如 咖啡因摄入）
+    :param label_b: 结果指标中文名（如 入睡延迟）
+    :param synthetic: 是否合成演示数据
+    :return: 一行中文解释（不含因果断言词）
+    """
+    grade = grade_correlation(correlation.pearson_r, correlation.n)
+    r = correlation.pearson_r
+    n = correlation.n
+    lag = correlation.best_lag
+    p = correlation.pearson_p
+
+    if synthetic:
+        if grade == "不足以判断":
+            return f"合成演示数据：样本不足或相关性较弱，不足以判断{label_a}与{label_b}之间的关联。"
+        strength = "强" if grade == "强相关" else "弱"
+        direction = "正" if r >= 0 else "负"
+        p_text = f"{p:.3f}" if not isnan(p) else "—"
+        return (
+            f"合成演示数据：{label_a}与{label_b}呈{strength}{direction}相关"
+            f"（滞后 {lag} 天，N={n}，Pearson r={r:.2f}，p={p_text}）。"
+            f"相关不等于因果，仅供参考。"
+        )
+
+    if n < MIN_PAIRS or isnan(r):
+        return f"你自录的数据天数不足（N={n}），暂不足以观察{label_a}与{label_b}之间的趋势。"
+    direction = "同向" if r >= 0 else "反向"
+    return (
+        f"从你自录的 {n} 天数据看，{label_a}与{label_b}大致呈{direction}变化趋势"
+        f"（仅描述趋势，样本量有限，暂不做统计显著性判断）。"
+    )

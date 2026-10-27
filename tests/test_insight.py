@@ -3,8 +3,12 @@ import math
 import random
 
 from app.agent.insight import (
+    FORBIDDEN_CAUSAL_WORDS,
+    LagCorrelation,
     MIN_PAIRS,
     align_daily_series,
+    build_template_explanation,
+    filter_causal_wording,
     grade_correlation,
     lagged_correlation,
 )
@@ -115,3 +119,69 @@ def test_grade_correlation_insufficient_for_small_n() -> None:
     """样本量不足 MIN_PAIRS 或 r 为 nan -> 不足以判断。"""
     assert grade_correlation(0.9, MIN_PAIRS - 1) == "不足以判断"
     assert grade_correlation(float("nan"), 100) == "不足以判断"
+
+
+def test_filter_causal_wording_blocks_causal_words() -> None:
+    """断言 #14：含 导致/因为/引起/确诊/诊断 的句子过滤后不再包含任何禁用词。"""
+    text = "咖啡因导致入睡延迟，因为咖啡因引起神经兴奋，可能被诊断为失眠。"
+    filtered = filter_causal_wording(text)
+
+    assert "相关入睡延迟" in filtered
+    assert not any(word in filtered for word in FORBIDDEN_CAUSAL_WORDS)
+
+
+def test_template_synthetic_reports_significance() -> None:
+    """合成数据：给出强度 + N + p，且不含因果断言词。"""
+    correlation = LagCorrelation(
+        best_lag=0,
+        n=120,
+        pearson_r=0.82,
+        pearson_p=0.001,
+        spearman_rho=0.80,
+        spearman_p=0.002,
+    )
+    text = build_template_explanation(correlation, "咖啡因摄入", "入睡延迟", synthetic=True)
+
+    assert "合成演示数据" in text
+    assert "强正相关" in text
+    assert "N=120" in text
+    assert "p=0.001" in text
+    assert "相关不等于因果" in text
+    assert not any(word in text for word in FORBIDDEN_CAUSAL_WORDS)
+
+
+def test_template_real_data_only_trend_no_significance() -> None:
+    """自录数据：只描述趋势，不写强/弱相关分级、不附 p 值。"""
+    correlation = LagCorrelation(
+        best_lag=1,
+        n=30,
+        pearson_r=0.60,
+        pearson_p=0.02,
+        spearman_rho=0.55,
+        spearman_p=0.03,
+    )
+    text = build_template_explanation(correlation, "咖啡因摄入", "入睡延迟", synthetic=False)
+
+    assert "趋势" in text
+    assert "强相关" not in text
+    assert "弱相关" not in text
+    assert "p=" not in text
+    assert not any(word in text for word in FORBIDDEN_CAUSAL_WORDS)
+
+
+def test_template_insufficient_data_declines_judgement() -> None:
+    """样本不足或 r 为 nan -> 两种来源都明确「不足以判断」，不给出相关性结论。"""
+    insufficient = LagCorrelation(
+        best_lag=0,
+        n=5,
+        pearson_r=0.90,
+        pearson_p=0.10,
+        spearman_rho=0.90,
+        spearman_p=0.10,
+    )
+    assert "不足以判断" in build_template_explanation(
+        insufficient, "咖啡因摄入", "入睡延迟", synthetic=True
+    )
+    assert "天数不足" in build_template_explanation(
+        insufficient, "咖啡因摄入", "入睡延迟", synthetic=False
+    )
