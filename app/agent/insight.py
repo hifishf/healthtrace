@@ -11,6 +11,9 @@ MIN_PAIRS = 10
 # 相关强度分级阈值（按 |r| 分档）
 STRONG_R = 0.7
 WEAK_R = 0.3
+# 判定 |r| 并列的容差：浮点尾数噪声约 1e-16，取 1e-9 足够把「数值上几乎相等」判为并列，
+# 避免线性斜坡这类数据在多个滞后档上因最后一位尾数不同而被误判出不同强度
+_R_TIE_TOL = 1e-9
 
 
 @dataclass(frozen=True)
@@ -106,9 +109,13 @@ def lagged_correlation(
             spearman_rho=rho,
             spearman_p=p_rho,
         )
-        if best is None or abs(r) > abs(best.pearson_r):
+        if best is None:
             best = candidate
-        elif abs(r) == abs(best.pearson_r) and abs(lag) < abs(best.best_lag):
+            continue
+        best_abs = abs(best.pearson_r)
+        if abs(r) - best_abs > _R_TIE_TOL:
+            best = candidate
+        elif abs(abs(r) - best_abs) <= _R_TIE_TOL and abs(lag) < abs(best.best_lag):
             best = candidate
     if best is None:
         return LagCorrelation(
