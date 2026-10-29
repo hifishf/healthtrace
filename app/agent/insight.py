@@ -305,7 +305,7 @@ def _all_synthetic(points_a: list[dict], points_b: list[dict]) -> bool:
 def analyze_series(points_a: list[dict], points_b: list[dict]) -> dict:
     """对齐两序列并算滞后相关，返回合成标记 / 样本数 / 丢弃数 / 相关系数。
     口径：对齐后样本不足 3 天时返回 nan 相关系数（由解释层输出「不足以判断」）。
-    :return: {"synthetic": bool, "n": int, "dropped": int, "correlation": LagCorrelation}
+    :return: {"synthetic": bool, "dropped": int, "correlation": LagCorrelation}
     """
     aligned = align_daily_series(points_a, points_b)
     n = len(aligned.dates)
@@ -323,7 +323,6 @@ def analyze_series(points_a: list[dict], points_b: list[dict]) -> dict:
         correlation = lagged_correlation(aligned.a, aligned.b)
     return {
         "synthetic": synthetic,
-        "n": n,
         "dropped": aligned.dropped,
         "correlation": correlation,
     }
@@ -336,7 +335,6 @@ class InsightState(TypedDict):
     series_a: list  # 预测指标记录（caffeine_mg）
     series_b: list  # 结果指标记录（sleep_onset_latency_min）
     synthetic: bool
-    n: int
     dropped: int
     correlation: LagCorrelation | None
     final_insight: dict | None
@@ -390,7 +388,7 @@ def build_insight_graph(llm=None):
             "label_a": LABEL_CAFFEINE,
             "label_b": LABEL_SLEEP_LATENCY,
             "synthetic": state["synthetic"],
-            "n": state["n"],
+            "n": correlation.n,
             "dropped": state["dropped"],
             "best_lag": correlation.best_lag if has_stats else None,
             "pearson_r": correlation.pearson_r if has_stats else None,
