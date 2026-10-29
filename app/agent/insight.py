@@ -16,6 +16,9 @@ MIN_PAIRS = 10
 # 相关强度分级阈值（按 |r| 分档）
 STRONG_R = 0.7
 WEAK_R = 0.3
+# 第 8 周演示指标对（冻结契约）：咖啡因摄入与入睡延迟的 metric_code
+METRIC_CAFFEINE = "caffeine_mg"
+METRIC_SLEEP_LATENCY = "sleep_onset_latency_min"
 # 判定 |r| 并列的容差：浮点尾数噪声约 1e-16，取 1e-9 足够把「数值上几乎相等」判为并列，
 # 避免线性斜坡这类数据在多个滞后档上因最后一位尾数不同而被误判出不同强度
 _R_TIE_TOL = 1e-9
