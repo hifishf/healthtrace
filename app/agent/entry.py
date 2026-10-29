@@ -36,12 +36,20 @@ def _triage_payload(tid: str, result: dict) -> dict:
     }
 
 
-async def dispatch(text, router_llm, chat_graph, triage_graph, thread_id=None) -> dict:
+async def dispatch(
+    text,
+    router_llm,
+    chat_graph,
+    triage_graph,
+    thread_id=None,
+    insight_graph=None,
+) -> dict:
     """统一入口：路由意图后分发到对应子图。
 
     - chat：跑 chat 子图，返回最终回复；
     - triage：跑追问分诊子图（首次 / 带 thread_id 续跑），返回追问或分级建议；
-    - insight / report：返回占位 stub。
+    - insight：跑因果分析子图，返回相关线索；未提供子图时回占位 stub；
+    - report：返回占位 stub。
     """
     decision = await route(text, router_llm)
     intent = decision.intent
@@ -62,5 +70,11 @@ async def dispatch(text, router_llm, chat_graph, triage_graph, thread_id=None) -
         else:
             result = await triage_graph.ainvoke(Command(resume=text), config=config)
         return _triage_payload(tid, result)
+
+    if intent == "insight":
+        if insight_graph is None:
+            return {"intent": intent, "kind": "stub", "reply": stub_reply(intent)}
+        result = await insight_graph.ainvoke({"messages": [HumanMessage(content=text)]})
+        return {"intent": intent, "kind": "insight", "final_insight": result["final_insight"]}
 
     return {"intent": intent, "kind": "stub", "reply": stub_reply(intent)}

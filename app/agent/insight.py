@@ -1,13 +1,19 @@
 """因果分析（insight）子图：时间对齐 -> 滞后相关 -> LLM 解释 -> 措辞过滤。"""
 from dataclasses import dataclass
 from math import isnan
+from typing import Annotated, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 from scipy import stats
 
 from app.agent.budget import TokenBudget
-from app.agent.llm import LLMUnavailable, invoke_llm
-from app.observability import llm_span, set_attr, set_output
+from app.agent.llm import LLMUnavailable, get_llm, invoke_llm
+from app.config import settings
+from app.identity import get_current_user_id
+from app.mcp.client import call_tool
+from app.observability import llm_span, set_attr, set_output, traced
 
 # 滞后搜索窗口（天）：在 [-MAX_LAG, MAX_LAG] 内找 |Pearson r| 最大的滞后档
 MAX_LAG = 7
@@ -19,6 +25,8 @@ WEAK_R = 0.3
 # 第 8 周演示指标对（冻结契约）：咖啡因摄入与入睡延迟的 metric_code
 METRIC_CAFFEINE = "caffeine_mg"
 METRIC_SLEEP_LATENCY = "sleep_onset_latency_min"
+LABEL_CAFFEINE = "咖啡因摄入"
+LABEL_SLEEP_LATENCY = "入睡延迟"
 # 判定 |r| 并列的容差：浮点尾数噪声约 1e-16，取 1e-9 足够把「数值上几乎相等」判为并列，
 # 避免线性斜坡这类数据在多个滞后档上因最后一位尾数不同而被误判出不同强度
 _R_TIE_TOL = 1e-9
@@ -258,6 +266,8 @@ async def explain_correlation(
     fallback = build_template_explanation(correlation, label_a, label_b, synthetic)
     if not synthetic:
         return fallback
+    if grade_correlation(correlation.pearson_r, correlation.n) == "不足以判断":
+        return fallback
     if budget.exhausted():
         set_attr("fallback_reason", "token_budget_exceeded")
         return fallback
@@ -281,3 +291,123 @@ async def explain_correlation(
     except LLMUnavailable as exc:
         set_attr("fallback_reason", exc.reason)
         return fallback
+
+
+def _all_synthetic(points_a: list[dict], points_b: list[dict]) -> bool:
+    """两序列都非空且所有记录 source 均为 synthetic 才视为合成演示数据（保守口径）。"""
+    if not points_a or not points_b:
+        return False
+    return all(p.get("source") == "synthetic" for p in points_a) and all(
+        p.get("source") == "synthetic" for p in points_b
+    )
+
+
+def analyze_series(points_a: list[dict], points_b: list[dict]) -> dict:
+    """对齐两序列并算滞后相关，返回合成标记 / 样本数 / 丢弃数 / 相关系数。
+    口径：对齐后样本不足 3 天时返回 nan 相关系数（由解释层输出「不足以判断」）。
+    :return: {"synthetic": bool, "n": int, "dropped": int, "correlation": LagCorrelation}
+    """
+    aligned = align_daily_series(points_a, points_b)
+    n = len(aligned.dates)
+    synthetic = _all_synthetic(points_a, points_b)
+    if n < 3:
+        correlation = LagCorrelation(
+            best_lag=0,
+            n=n,
+            pearson_r=float("nan"),
+            pearson_p=float("nan"),
+            spearman_rho=float("nan"),
+            spearman_p=float("nan"),
+        )
+    else:
+        correlation = lagged_correlation(aligned.a, aligned.b)
+    return {
+        "synthetic": synthetic,
+        "n": n,
+        "dropped": aligned.dropped,
+        "correlation": correlation,
+    }
+
+
+class InsightState(TypedDict):
+    """因果分析子图状态：查询出的两序列 -> 分析结果 -> 最终解释。"""
+
+    messages: Annotated[list, add_messages]
+    series_a: list  # 预测指标记录（caffeine_mg）
+    series_b: list  # 结果指标记录（sleep_onset_latency_min）
+    synthetic: bool
+    n: int
+    dropped: int
+    correlation: LagCorrelation | None
+    final_insight: dict | None
+
+
+def build_insight_graph(llm=None):
+    """构建因果分析子图：query -> analyze -> explain，单次执行、无需 checkpointer。
+
+    llm 可注入 fake 做确定性测试；不传则用默认 DeepSeek（temperature=0，只做翻译）。
+    """
+    if llm is None:
+        llm = get_llm()
+
+    @traced("graph.insight.query")
+    async def query_node(state: InsightState) -> dict:
+        """经 MCP 读取两条演示指标的记录（Agent 层不直接写 SQL）。"""
+        user_id = str(get_current_user_id())
+        result_a = await call_tool(
+            "query_metrics", {"user_id": user_id, "metric_code": METRIC_CAFFEINE}
+        )
+        result_b = await call_tool(
+            "query_metrics", {"user_id": user_id, "metric_code": METRIC_SLEEP_LATENCY}
+        )
+        return {
+            "series_a": result_a.get("metrics", []),
+            "series_b": result_b.get("metrics", []),
+        }
+
+    @traced("graph.insight.analyze")
+    async def analyze_node(state: InsightState) -> dict:
+        """对齐 + 判定合成口径 + 滞后相关。"""
+        return analyze_series(state["series_a"], state["series_b"])
+
+    @traced("graph.insight.explain")
+    async def explain_node(state: InsightState) -> dict:
+        """把统计结果转写成最终解释，组装 final_insight（数值为 nan 时置 None，避免坏 JSON）。"""
+        budget = TokenBudget(settings.llm_session_token_budget)
+        correlation = state["correlation"]
+        text = await explain_correlation(
+            correlation,
+            LABEL_CAFFEINE,
+            LABEL_SLEEP_LATENCY,
+            state["synthetic"],
+            budget,
+            llm,
+        )
+        has_stats = correlation is not None and not isnan(correlation.pearson_r)
+        final_insight = {
+            "metric_a": METRIC_CAFFEINE,
+            "metric_b": METRIC_SLEEP_LATENCY,
+            "label_a": LABEL_CAFFEINE,
+            "label_b": LABEL_SLEEP_LATENCY,
+            "synthetic": state["synthetic"],
+            "n": state["n"],
+            "dropped": state["dropped"],
+            "best_lag": correlation.best_lag if has_stats else None,
+            "pearson_r": correlation.pearson_r if has_stats else None,
+            "pearson_p": correlation.pearson_p if has_stats else None,
+            "spearman_rho": correlation.spearman_rho if has_stats else None,
+            "spearman_p": correlation.spearman_p if has_stats else None,
+            "grade": grade_correlation(correlation.pearson_r, correlation.n),
+            "text": text,
+        }
+        return {"final_insight": final_insight}
+
+    graph = StateGraph(InsightState)
+    graph.add_node("query", query_node)
+    graph.add_node("analyze", analyze_node)
+    graph.add_node("explain", explain_node)
+    graph.add_edge(START, "query")
+    graph.add_edge("query", "analyze")
+    graph.add_edge("analyze", "explain")
+    graph.add_edge("explain", END)
+    return graph.compile()

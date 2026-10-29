@@ -90,15 +90,16 @@ class AgentResponse(BaseModel):
     """POST /agent 响应：按意图分发后的统一结果。
 
     kind 取值：reply（chat 最终回复）/ question（triage 追问）/ advice（triage 建议）/
-    stub（insight/report 占位）。
+    insight（因果分析线索）/ stub（report 占位）。
     """
 
     intent: str
-    kind: Literal["reply", "question", "advice", "stub"]
+    kind: Literal["reply", "question", "advice", "insight", "stub"]
     reply: str | None = None
     thread_id: str | None = None
     question: str | None = None
     final_advice: dict | None = None
+    final_insight: dict | None = None
     red_flag_triggered: bool = False
     candidate_count: int = 0
     top_tier_count: int = 0

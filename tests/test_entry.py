@@ -45,6 +45,22 @@ class _TriageLLM:
         return _TriageExtract()
 
 
+class _FakeInsightGraph:
+    """返回固定 final_insight 的假 insight 子图。"""
+
+    async def ainvoke(self, state):
+        return {
+            "final_insight": {
+                "intent": "insight",
+                "kind": "insight",
+                "synthetic": True,
+                "n": 120,
+                "grade": "强相关",
+                "text": "咖啡因摄入与入睡延迟呈强正相关。",
+            }
+        }
+
+
 def _decision(intent: str) -> RouteDecision:
     return RouteDecision(intent=intent, confidence=0.9, extracted_slots={})
 
@@ -109,8 +125,8 @@ async def test_entry_triage_resume_with_thread_id() -> None:
     assert second["kind"] in {"question", "advice"}
 
 
-async def test_entry_routes_insight_and_report_to_stub() -> None:
-    """insight / report 意图 -> 占位 stub。"""
+async def test_entry_routes_insight_without_graph_and_report_to_stub() -> None:
+    """未提供 insight 子图时 insight 回 stub；report 始终回 stub。"""
     for intent in ("insight", "report"):
         result = await dispatch(
             "随便一句话",
@@ -121,3 +137,18 @@ async def test_entry_routes_insight_and_report_to_stub() -> None:
         assert result["intent"] == intent
         assert result["kind"] == "stub"
         assert "后续周" in result["reply"]
+
+
+async def test_entry_routes_insight_to_graph() -> None:
+    """提供 insight 子图时，insight 意图 -> 返回 final_insight 相关线索。"""
+    result = await dispatch(
+        "为什么我喝咖啡就睡不好",
+        _FakeRouterLLM(_decision("insight")),
+        chat_graph=None,
+        triage_graph=None,
+        insight_graph=_FakeInsightGraph(),
+    )
+
+    assert result["intent"] == "insight"
+    assert result["kind"] == "insight"
+    assert result["final_insight"]["text"]

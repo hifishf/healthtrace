@@ -11,6 +11,7 @@ from app import crud, memory
 from app.agent.chat import build_chat_graph
 from app.agent.entry import dispatch
 from app.agent.graph import build_agent_graph
+from app.agent.insight import build_insight_graph
 from app.agent.llm import get_llm
 from app.agent.stream import chat_event_stream
 from app.agent.triage import build_triage_graph, initial_triage_state
@@ -47,14 +48,17 @@ tracer = get_tracer()
 router_llm = get_llm()
 chat_graph = build_chat_graph()
 agent_graph = build_agent_graph(router_llm=router_llm, chat_graph=chat_graph)
+insight_graph = build_insight_graph()
 
 
 def _agent_summary(result: dict) -> str | None:
-    """从统一入口结果里取一句摘要（chat/stub 取 reply，triage 取追问或建议）。"""
+    """从统一入口结果里取一句摘要（chat/stub 取 reply，triage 取追问或建议，insight 取解释）。"""
     if result.get("kind") in ("reply", "stub"):
         return result.get("reply")
     if result.get("kind") == "question":
         return result.get("question")
+    if result.get("kind") == "insight":
+        return (result.get("final_insight") or {}).get("text")
     advice = result.get("final_advice")
     return advice.get("suggestion") if advice else None
 
@@ -141,6 +145,7 @@ async def agent(payload: AgentRequest, request: Request) -> AgentResponse:
             chat_graph=chat_graph,
             triage_graph=request.app.state.triage_graph,
             thread_id=payload.thread_id,
+            insight_graph=insight_graph,
         )
         if result.get("thread_id"):
             root_span.set_attribute("langfuse.session.id", result["thread_id"])

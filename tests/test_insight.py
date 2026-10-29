@@ -1,16 +1,20 @@
 """因果分析（insight）的确定性断言：时间对齐 / 滞后相关 / 措辞过滤 / 来源口径。"""
 import math
 import random
+from datetime import date, timedelta
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from app.agent.budget import TokenBudget
 from app.agent.llm import LLMUnavailable
 from app.agent.insight import (
     FORBIDDEN_CAUSAL_WORDS,
     LagCorrelation,
+    METRIC_CAFFEINE,
+    METRIC_SLEEP_LATENCY,
     MIN_PAIRS,
     align_daily_series,
+    build_insight_graph,
     build_template_explanation,
     explain_correlation,
     filter_causal_wording,
@@ -297,3 +301,38 @@ async def test_explain_correlation_real_data_skips_llm() -> None:
     assert "趋势" in text
     assert "强相关" not in text
     assert "弱相关" not in text
+
+
+async def test_insight_graph_end_to_end_synthetic(monkeypatch) -> None:
+    """子图端到端：query(经 MCP) -> analyze -> explain，合成数据输出相关线索且无因果词。"""
+    caffeine = [100.0, 200.0, 150.0, 300.0, 250.0, 180.0, 220.0, 160.0, 280.0, 240.0]
+    latency = [round(10.0 + 0.15 * c, 1) for c in caffeine]
+    start = date(2026, 1, 1)
+
+    async def fake_call_tool(name: str, arguments: dict) -> dict:
+        code = arguments["metric_code"]
+        values = caffeine if code == METRIC_CAFFEINE else latency
+        return {
+            "metrics": [
+                {
+                    "recorded_date": (start + timedelta(days=i)).isoformat(),
+                    "value": value,
+                    "source": "synthetic",
+                }
+                for i, value in enumerate(values)
+            ]
+        }
+
+    monkeypatch.setattr("app.agent.insight.call_tool", fake_call_tool)
+    graph = build_insight_graph(llm=_ExplainLLM("咖啡因摄入与入睡延迟相关。"))
+    result = await graph.ainvoke(
+        {"messages": [HumanMessage(content="为什么我喝咖啡就睡不好")]}
+    )
+    final = result["final_insight"]
+
+    assert final["synthetic"] is True
+    assert final["n"] == 10
+    assert final["best_lag"] == 0
+    assert final["grade"] == "强相关"
+    assert "导致" not in final["text"]
+    assert final["text"]
