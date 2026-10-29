@@ -2,12 +2,17 @@
 import math
 import random
 
+from langchain_core.messages import AIMessage
+
+from app.agent.budget import TokenBudget
+from app.agent.llm import LLMUnavailable
 from app.agent.insight import (
     FORBIDDEN_CAUSAL_WORDS,
     LagCorrelation,
     MIN_PAIRS,
     align_daily_series,
     build_template_explanation,
+    explain_correlation,
     filter_causal_wording,
     grade_correlation,
     lagged_correlation,
@@ -185,3 +190,110 @@ def test_template_insufficient_data_declines_judgement() -> None:
     assert "天数不足" in build_template_explanation(
         insufficient, "咖啡因摄入", "入睡延迟", synthetic=False
     )
+
+
+class _ExplainLLM:
+    """记录收到的消息、按预设文本回复的假模型。"""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.last_messages: list | None = None
+
+    async def ainvoke(self, messages):
+        self.last_messages = messages
+        return AIMessage(content=self.text)
+
+
+class _EmptyExplainLLM:
+    """回复空文本的假模型，用于触发空响应兜底。"""
+
+    async def ainvoke(self, messages):
+        return AIMessage(content="")
+
+
+class _FailingExplainLLM:
+    """直接抛 LLMUnavailable 的假模型，用于触发失败兜底。"""
+
+    async def ainvoke(self, messages):
+        raise LLMUnavailable("llm_unavailable")
+
+
+async def test_explain_correlation_translates_and_filters() -> None:
+    """合成数据走 LLM：拿到 r/N 等统计事实，输出经措辞过滤、不含因果词。"""
+    correlation = LagCorrelation(
+        best_lag=0,
+        n=120,
+        pearson_r=0.82,
+        pearson_p=0.001,
+        spearman_rho=0.80,
+        spearman_p=0.002,
+    )
+    llm = _ExplainLLM("咖啡因摄入导致入睡延迟，二者呈强正相关。")
+    budget = TokenBudget(limit=10000)
+    text = await explain_correlation(
+        correlation, "咖啡因摄入", "入睡延迟", synthetic=True, budget=budget, llm=llm
+    )
+
+    assert llm.last_messages is not None
+    assert "Pearson 相关系数 r" in llm.last_messages[-1].content
+    assert "相关入睡延迟" in text
+    assert "导致" not in text
+
+
+async def test_explain_correlation_empty_falls_back() -> None:
+    """LLM 返回空文本 -> 回退确定性模板。"""
+    correlation = LagCorrelation(
+        best_lag=0,
+        n=120,
+        pearson_r=0.82,
+        pearson_p=0.001,
+        spearman_rho=0.80,
+        spearman_p=0.002,
+    )
+    budget = TokenBudget(limit=10000)
+    text = await explain_correlation(
+        correlation, "咖啡因摄入", "入睡延迟", synthetic=True, budget=budget, llm=_EmptyExplainLLM()
+    )
+
+    assert "合成演示数据" in text
+    assert not any(word in text for word in FORBIDDEN_CAUSAL_WORDS)
+
+
+async def test_explain_correlation_llm_failure_falls_back() -> None:
+    """LLM 调用失败 -> 回退确定性模板。"""
+    correlation = LagCorrelation(
+        best_lag=0,
+        n=120,
+        pearson_r=0.82,
+        pearson_p=0.001,
+        spearman_rho=0.80,
+        spearman_p=0.002,
+    )
+    budget = TokenBudget(limit=10000)
+    text = await explain_correlation(
+        correlation, "咖啡因摄入", "入睡延迟", synthetic=True, budget=budget, llm=_FailingExplainLLM()
+    )
+
+    assert "合成演示数据" in text
+
+
+async def test_explain_correlation_real_data_skips_llm() -> None:
+    """自录数据不调 LLM，直接返回趋势模板，不做显著性断言。"""
+    correlation = LagCorrelation(
+        best_lag=1,
+        n=30,
+        pearson_r=0.60,
+        pearson_p=0.02,
+        spearman_rho=0.55,
+        spearman_p=0.03,
+    )
+    llm = _ExplainLLM("不应被调用")
+    budget = TokenBudget(limit=10000)
+    text = await explain_correlation(
+        correlation, "咖啡因摄入", "入睡延迟", synthetic=False, budget=budget, llm=llm
+    )
+
+    assert llm.last_messages is None
+    assert "趋势" in text
+    assert "强相关" not in text
+    assert "弱相关" not in text

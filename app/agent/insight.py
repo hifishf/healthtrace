@@ -2,7 +2,12 @@
 from dataclasses import dataclass
 from math import isnan
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from scipy import stats
+
+from app.agent.budget import TokenBudget
+from app.agent.llm import LLMUnavailable, invoke_llm
+from app.observability import llm_span, set_attr, set_output
 
 # 滞后搜索窗口（天）：在 [-MAX_LAG, MAX_LAG] 内找 |Pearson r| 最大的滞后档
 MAX_LAG = 7
@@ -201,3 +206,75 @@ def build_template_explanation(
         f"从你自录的 {n} 天数据看，{label_a}与{label_b}大致呈{direction}变化趋势"
         f"（仅描述趋势，样本量有限，暂不做统计显著性判断）。"
     )
+
+
+_EXPLAIN_SYSTEM = (
+    "你是 HealthTrace 的健康管家。请把给定的统计事实原样转写成一句自然、清楚的中文解释。"
+    "只做转写，不做统计判断，不要改变数字，不要推断因果。"
+    "禁止使用：导致、因为、引起、确诊、诊断；用「相关」「伴随」替代。"
+    "必须标注这是合成演示数据，并说明相关不等于因果。只输出这一句话，不要加引号。"
+)
+
+
+def _stats_context(
+    correlation: LagCorrelation,
+    label_a: str,
+    label_b: str,
+    synthetic: bool,
+) -> str:
+    """把统计结果拼成给 LLM 的上下文；自录数据不给 p 值与分级，避免泄漏显著性措辞。"""
+    lines = [
+        f"指标：{label_a} 与 {label_b}",
+        f"最佳滞后：{correlation.best_lag} 天",
+        f"配对样本数 N：{correlation.n}",
+        f"Pearson 相关系数 r：{correlation.pearson_r:.2f}",
+        f"Spearman 秩相关系数 rho：{correlation.spearman_rho:.2f}",
+    ]
+    if synthetic:
+        lines.append(f"Pearson p 值：{correlation.pearson_p:.3f}")
+        lines.append(f"相关强度分级：{grade_correlation(correlation.pearson_r, correlation.n)}")
+        lines.append("数据来源：合成演示数据")
+    else:
+        lines.append("数据来源：自录真实数据")
+    return "\n".join(lines)
+
+
+async def explain_correlation(
+    correlation: LagCorrelation,
+    label_a: str,
+    label_b: str,
+    synthetic: bool,
+    budget: TokenBudget,
+    llm,
+) -> str:
+    """把统计结果转写成最终中文解释：LLM 只翻译、不做统计判断，输出必经措辞过滤。
+    口径：synthetic=True 才走 LLM 翻译，失败/空/超限回退确定性模板；
+    synthetic=False（自录真实数据）不做显著性断言，确定性模板直接返回、不调 LLM。
+    :return: 最终解释文本（已过滤因果断言词）
+    """
+    fallback = build_template_explanation(correlation, label_a, label_b, synthetic)
+    if not synthetic:
+        return fallback
+    if budget.exhausted():
+        set_attr("fallback_reason", "token_budget_exceeded")
+        return fallback
+    context = _stats_context(correlation, label_a, label_b, synthetic)
+    try:
+        with llm_span(
+            "llm.insight.explain",
+            {"label_a": label_a, "label_b": label_b, "context": context},
+        ):
+            response = await invoke_llm(
+                llm,
+                [SystemMessage(content=_EXPLAIN_SYSTEM), HumanMessage(content=context)],
+            )
+            text = (response.content or "").strip()
+            set_output(text)
+        if text:
+            budget.consume(budget.estimate(context + text))
+            return filter_causal_wording(text)
+        set_attr("fallback_reason", "empty_response")
+        return fallback
+    except LLMUnavailable as exc:
+        set_attr("fallback_reason", exc.reason)
+        return fallback
