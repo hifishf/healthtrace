@@ -305,3 +305,50 @@ class EpisodicMemory(Base):
         server_default=text("now()"),
         comment="创建时间",
     )
+
+
+class LabReferenceRange(Base):
+    """检验指标参考范围（按指标代码/单位/年龄组/性别给参考区间）。"""
+
+    __tablename__ = "lab_reference_ranges"
+    __table_args__ = {
+        "comment": "检验指标参考范围（按指标代码/单位/年龄组/性别给参考区间）"
+    }
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
+    metric_code: Mapped[str] = mapped_column(
+        String(50), nullable=False, index=True, comment="指标代码（如 ldl_cholesterol）"
+    )
+    unit: Mapped[str] = mapped_column(String(20), nullable=False, comment="单位（如 mmol/L）")
+    low: Mapped[Decimal | None] = mapped_column(
+        Numeric, nullable=True, comment="参考范围下限（可空，如仅上限约束）"
+    )
+    high: Mapped[Decimal | None] = mapped_column(
+        Numeric, nullable=True, comment="参考范围上限（可空，如仅下限约束）"
+    )
+    age_group: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, comment="适用年龄组（如 adult，空=不限）"
+    )
+    sex: Mapped[str | None] = mapped_column(
+        String(10), nullable=True, comment="适用性别（male/female，空=不限）"
+    )
+
+
+class DrugInteraction(Base):
+    """药物交互规则（确定性规则 + 风险分级：禁忌/严重/中等/轻微）。"""
+
+    __tablename__ = "drug_interactions"
+    __table_args__ = (
+        UniqueConstraint("drug_a", "drug_b", name="uq_drug_interactions_drug_a_drug_b"),
+        {"comment": "药物交互规则表（确定性规则 + 风险分级：禁忌/严重/中等/轻微）"},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
+    drug_a: Mapped[str] = mapped_column(String(200), nullable=False, comment="药物 A 名称")
+    drug_b: Mapped[str] = mapped_column(String(200), nullable=False, comment="药物 B 名称")
+    severity: Mapped[str] = mapped_column(
+        String(20), nullable=False, comment="风险等级：禁忌/严重/中等/轻微"
+    )
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, comment="交互说明（含来源标注）"
+    )
