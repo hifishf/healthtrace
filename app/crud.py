@@ -10,6 +10,7 @@ from app.db import async_session
 from app.models import (
     Allergy,
     Condition,
+    DrugInteraction,
     Followup,
     LabReferenceRange,
     Medication,
@@ -350,3 +351,33 @@ async def bulk_upsert_metrics(
     async with async_session() as session:
         await session.execute(stmt)
         await session.commit()
+
+
+async def find_drug_interactions(drug_names: list[str]) -> list[dict]:
+    """返回 drug_interactions 中两个端点都在给定药物集合内的规则（按 id 升序）。
+
+    端点集合判定天然方向无关：drug_a / drug_b 只要都在 drug_names 里即命中，
+    调用方（规则引擎）负责把命中按风险等级排序。
+    """
+    if len(drug_names) < 2:
+        return []
+    stmt = (
+        select(DrugInteraction)
+        .where(
+            DrugInteraction.drug_a.in_(drug_names),
+            DrugInteraction.drug_b.in_(drug_names),
+        )
+        .order_by(DrugInteraction.id)
+    )
+    async with async_session() as session:
+        rows = (await session.execute(stmt)).scalars().all()
+
+    return [
+        {
+            "drug_a": row.drug_a,
+            "drug_b": row.drug_b,
+            "severity": row.severity,
+            "description": row.description,
+        }
+        for row in rows
+    ]

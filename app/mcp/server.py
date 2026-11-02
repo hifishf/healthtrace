@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastmcp import FastMCP
 
-from app import crud, imports, memory, portrait
+from app import crud, imports, interactions, memory, portrait
 from app.dates import resolve_metric_date
 
 mcp = FastMCP("HealthTrace Data")
@@ -52,12 +52,11 @@ async def list_medications(user_id: str) -> dict:
 
 @mcp.tool
 async def check_drug_interaction(user_id: str, medication_names: list[str]) -> dict:
-    """预留：药物交互规则引擎未实现（第 9 周接入），当前返回未实现标记。"""
-    return {
-        "ok": False,
-        "error_code": "NOT_IMPLEMENTED",
-        "message": "药物交互检查第 9 周实现",
-    }
+    """检查给定用药清单两两之间是否存在已知交互，返回风险分级命中。
+
+    user_id 预留：后续可合并用户存档用药；当前仅按传入的 medication_names 判定。
+    """
+    return await interactions.check_drug_interactions(medication_names)
 
 
 @mcp.tool
