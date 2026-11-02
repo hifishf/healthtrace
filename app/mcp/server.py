@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastmcp import FastMCP
 
-from app import crud, memory, portrait
+from app import crud, imports, memory, portrait
 from app.dates import resolve_metric_date
 
 mcp = FastMCP("HealthTrace Data")
@@ -36,12 +36,11 @@ async def query_metrics(
 
 @mcp.tool
 async def import_metrics(user_id: str, source: str, metrics: list[dict]) -> dict:
-    """预留：真实 HealthKit 数据导入未实现（第 9 周接入），当前返回未实现标记。"""
-    return {
-        "ok": False,
-        "error_code": "NOT_IMPLEMENTED",
-        "message": "HealthKit 数据导入第 9 周实现",
-    }
+    """导入健康指标（CSV 或 HealthKit 构造的行列表），逐行校验后覆盖入库。
+
+    每行含 metric_code / value / unit / date；非法行（错单位/错日期等）进 rejected 返回。
+    """
+    return await imports.import_metric_rows(user_id, source, metrics)
 
 
 @mcp.tool

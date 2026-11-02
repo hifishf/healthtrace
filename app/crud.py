@@ -7,7 +7,15 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db import async_session
-from app.models import Allergy, Condition, Followup, Medication, MetricRecord, Preference
+from app.models import (
+    Allergy,
+    Condition,
+    Followup,
+    LabReferenceRange,
+    Medication,
+    MetricRecord,
+    Preference,
+)
 
 
 async def upsert_metric(
@@ -279,3 +287,66 @@ async def add_followup(
         session.add(row)
         await session.commit()
         return row.id
+
+
+async def get_reference_units(metric_codes: list[str]) -> dict[str, set[str]]:
+    """返回 metric_code -> 该指标在参考范围表中出现过的单位集合（导入单位校验用）。
+
+    某指标没有参考范围记录时不进结果集（调用方据此跳过单位一致性校验）。
+    """
+    if not metric_codes:
+        return {}
+    stmt = select(LabReferenceRange.metric_code, LabReferenceRange.unit).where(
+        LabReferenceRange.metric_code.in_(metric_codes)
+    )
+    async with async_session() as session:
+        rows = (await session.execute(stmt)).all()
+
+    result: dict[str, set[str]] = {}
+    for metric_code, unit in rows:
+        result.setdefault(metric_code, set()).add(unit)
+    return result
+
+
+async def bulk_upsert_metrics(
+    user_id: UUID,
+    rows: list[dict],
+    source: str = "csv",
+) -> None:
+    """批量覆盖写入指标（同 user_id+metric_code+recorded_date 覆盖），调用方保证 rows 已校验。
+
+    同批次内同键重复时最后一条生效（先在 Python 内按顺序去重），与单条覆盖语义一致。
+    """
+    if not rows:
+        return
+
+    # 同批次去重：以 (metric_code, recorded_date) 为键，后出现的覆盖先出现的
+    deduped: dict[tuple[str, date], dict] = {}
+    for row in rows:
+        key = (row["metric_code"], row["recorded_date"])
+        deduped[key] = row
+
+    values = [
+        {
+            "user_id": user_id,
+            "metric_code": row["metric_code"],
+            "value": Decimal(str(row["value"])),
+            "unit": row["unit"],
+            "recorded_date": row["recorded_date"],
+            "source": source,
+        }
+        for row in deduped.values()
+    ]
+
+    stmt = insert(MetricRecord).values(values)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["user_id", "metric_code", "recorded_date"],
+        set_={
+            "value": stmt.excluded.value,
+            "unit": stmt.excluded.unit,
+            "source": stmt.excluded.source,
+        },
+    )
+    async with async_session() as session:
+        await session.execute(stmt)
+        await session.commit()
