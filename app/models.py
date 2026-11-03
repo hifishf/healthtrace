@@ -10,6 +10,7 @@ from sqlalchemy import (
     Computed,
     Date,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -21,7 +22,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.db_types import Vector
+from app.db_types import VECTOR_DIMENSIONS, Vector
 
 
 class Base(DeclarativeBase):
@@ -360,9 +361,15 @@ class KnowledgeEntry(Base):
     """RAG 知识条目（原子化演示摘要 + 可核验来源 + pgvector embedding）。"""
 
     __tablename__ = "knowledge_entries"
-    __table_args__ = {
-        "comment": "RAG 知识条目（第 10 周，原子化演示摘要，带来源与语义检索向量）"
-    }
+    __table_args__ = (
+        Index(
+            "ix_knowledge_entries_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        {"comment": "RAG 知识条目（第 10 周，原子化演示摘要，带来源与语义检索向量）"},
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
     knowledge_key: Mapped[str] = mapped_column(
@@ -398,7 +405,7 @@ class KnowledgeEntry(Base):
         String(64), nullable=False, comment="正文 SHA-256，内容变化时重建向量"
     )
     embedding: Mapped[list[float] | None] = mapped_column(
-        Vector(512),
+        Vector(VECTOR_DIMENSIONS),
         nullable=True,
         comment="512 维语义检索向量；种子入库后由第 10 周第 2 步回填",
     )

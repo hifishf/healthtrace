@@ -3,7 +3,7 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import ARRAY, String, bindparam, select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from app.db import async_session
@@ -381,3 +381,51 @@ async def find_drug_interactions(drug_names: list[str]) -> list[dict]:
         }
         for row in rows
     ]
+
+
+async def search_knowledge_entries(
+    embedding: list[float],
+    top_k: int = 5,
+    metric_codes: list[str] | None = None,
+) -> list[dict]:
+    """按余弦相似度检索已生成向量的知识条目，返回来源元数据与相关度。
+
+    metric_codes 非空时保留通用知识和与任一指标代码关联的知识；
+    查询使用参数化 CAST，不拼接向量值或用户输入。
+    """
+    vector_text = "[" + ",".join(f"{float(value):.8g}" for value in embedding) + "]"
+    filters = "embedding IS NOT NULL"
+    params = {"embedding": vector_text, "top_k": top_k}
+    if metric_codes:
+        filters += (
+            " AND (metric_codes IS NULL OR metric_codes && "
+            "CAST(:metric_codes AS varchar[]))"
+        )
+        params["metric_codes"] = metric_codes
+
+    stmt = text(
+        f"""
+        SELECT
+            knowledge_key,
+            title,
+            content,
+            category,
+            metric_codes,
+            source_name,
+            source_url,
+            source_version,
+            1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
+        FROM knowledge_entries
+        WHERE {filters}
+        ORDER BY embedding <=> CAST(:embedding AS vector), id
+        LIMIT :top_k
+        """
+    )
+    if metric_codes:
+        stmt = stmt.bindparams(
+            bindparam("metric_codes", type_=ARRAY(String(length=50)))
+        )
+
+    async with async_session() as session:
+        rows = (await session.execute(stmt, params)).mappings().all()
+    return [dict(row) for row in rows]

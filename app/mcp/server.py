@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastmcp import FastMCP
 
-from app import crud, imports, interactions, memory, portrait
+from app import crud, imports, interactions, memory, portrait, rag
 from app.dates import resolve_metric_date
 
 mcp = FastMCP("HealthTrace Data")
@@ -57,6 +57,17 @@ async def check_drug_interaction(user_id: str, medication_names: list[str]) -> d
     user_id 预留：后续可合并用户存档用药；当前仅按传入的 medication_names 判定。
     """
     return await interactions.check_drug_interactions(medication_names)
+
+
+@mcp.tool
+async def search_knowledge(
+    query: str,
+    top_k: int = 5,
+    metric_codes: list[str] | None = None,
+) -> dict:
+    """语义检索医学知识，返回带条目、来源和相似度分数的可追溯结果。"""
+    hits = await rag.search_knowledge(query, top_k=top_k, metric_codes=metric_codes)
+    return {"results": [hit.as_dict() for hit in hits]}
 
 
 @mcp.tool

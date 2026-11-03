@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     router_confidence_threshold: float = 0.7
     # 单用户：固定默认 user_id（与 schema/init.sql 种子一致）
     default_user_id: UUID = UUID("00000000-0000-0000-0000-000000000001")
+    # 本地中文 embedding 模型缓存目录；首次使用从 ModelScope 下载约 91MB 权重
+    embedding_model_cache_dir: str = "~/.cache/healthtrace/embedding"
+    # ONNX 推理线程数；本地演示环境使用 2 线程，避免抢占其他服务
+    embedding_threads: int = 2
 
 
 settings = Settings()
