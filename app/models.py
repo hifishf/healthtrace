@@ -21,6 +21,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from app.db_types import Vector
+
 
 class Base(DeclarativeBase):
     """ORM 基类。"""
@@ -351,4 +353,58 @@ class DrugInteraction(Base):
     )
     description: Mapped[str] = mapped_column(
         Text, nullable=False, comment="交互说明（含来源标注）"
+    )
+
+
+class KnowledgeEntry(Base):
+    """RAG 知识条目（原子化演示摘要 + 可核验来源 + pgvector embedding）。"""
+
+    __tablename__ = "knowledge_entries"
+    __table_args__ = {
+        "comment": "RAG 知识条目（第 10 周，原子化演示摘要，带来源与语义检索向量）"
+    }
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True, comment="自增主键")
+    knowledge_key: Mapped[str] = mapped_column(
+        String(100), unique=True, nullable=False, comment="稳定知识键（种子幂等更新用）"
+    )
+    title: Mapped[str] = mapped_column(
+        String(300), nullable=False, comment="知识条目标题"
+    )
+    content: Mapped[str] = mapped_column(
+        Text, nullable=False, comment="原子知识正文（演示摘要，非诊疗依据）"
+    )
+    category: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        index=True,
+        comment="知识分类：symptom/disease/association/lab/drug/safety",
+    )
+    metric_codes: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String(50)),
+        nullable=True,
+        comment="适用检验指标代码；空表示不限定指标",
+    )
+    source_name: Mapped[str] = mapped_column(
+        String(200), nullable=False, comment="来源名称"
+    )
+    source_url: Mapped[str] = mapped_column(
+        Text, nullable=False, comment="来源检索或原文地址"
+    )
+    source_version: Mapped[str] = mapped_column(
+        String(100), nullable=False, comment="来源版本或采集日期"
+    )
+    content_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, comment="正文 SHA-256，内容变化时重建向量"
+    )
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(512),
+        nullable=True,
+        comment="512 维语义检索向量；种子入库后由第 10 周第 2 步回填",
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+        server_default=text("now()"),
+        comment="最后更新时间",
     )
