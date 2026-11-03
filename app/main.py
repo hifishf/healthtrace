@@ -13,11 +13,13 @@ from app.agent.entry import dispatch
 from app.agent.graph import build_agent_graph
 from app.agent.insight import build_insight_graph
 from app.agent.llm import get_llm
+from app.agent.report import build_report_graph
 from app.agent.stream import chat_event_stream
 from app.agent.triage import build_triage_graph, initial_triage_state
 from app.checkpoint import open_checkpointer
 from app.config import settings
 from app.identity import get_current_user_id
+from app.mcp.client import call_tool
 from app.observability import get_tracer, init_observability
 from app.schemas import (
     AgentRequest,
@@ -49,16 +51,19 @@ router_llm = get_llm()
 chat_graph = build_chat_graph()
 agent_graph = build_agent_graph(router_llm=router_llm, chat_graph=chat_graph)
 insight_graph = build_insight_graph()
+report_graph = build_report_graph(tool_caller=call_tool)
 
 
 def _agent_summary(result: dict) -> str | None:
-    """从统一入口结果里取一句摘要（chat/stub 取 reply，triage 取追问或建议，insight 取解释）。"""
+    """从统一入口结果取摘要：chat/stub/report 取文本，triage 取问题或建议。"""
     if result.get("kind") in ("reply", "stub"):
         return result.get("reply")
     if result.get("kind") == "question":
         return result.get("question")
     if result.get("kind") == "insight":
         return (result.get("final_insight") or {}).get("text")
+    if result.get("kind") == "report":
+        return (result.get("final_report") or {}).get("summary")
     advice = result.get("final_advice")
     return advice.get("suggestion") if advice else None
 
@@ -134,7 +139,7 @@ async def chat(payload: ChatRequest) -> ChatResponse:
 
 @app.post("/agent", response_model=AgentResponse)
 async def agent(payload: AgentRequest, request: Request) -> AgentResponse:
-    """统一入口：按意图把一句话路由到 chat / triage（insight / report 回 stub）。"""
+    """统一入口：按意图把一句话路由到 chat / triage / insight / report。"""
     with tracer.start_as_current_span("agent") as root_span:
         root_span.set_attribute("langfuse.trace.name", "统一入口")
         root_span.set_attribute("langfuse.user.id", str(get_current_user_id()))
@@ -146,6 +151,7 @@ async def agent(payload: AgentRequest, request: Request) -> AgentResponse:
             triage_graph=request.app.state.triage_graph,
             thread_id=payload.thread_id,
             insight_graph=insight_graph,
+            report_graph=report_graph,
         )
         if result.get("thread_id"):
             root_span.set_attribute("langfuse.session.id", result["thread_id"])

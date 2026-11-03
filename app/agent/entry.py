@@ -1,10 +1,11 @@
-"""统一入口：按 Router 意图把一句话分发到 chat / triage 子图（insight / report 回 stub）。"""
+"""统一入口：按 Router 意图分发到 chat / triage / insight / report 子图。"""
 from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from app.agent.graph import stub_reply
+from app.agent.report import initial_report_state
 from app.agent.router import route
 from app.agent.triage import initial_triage_state
 
@@ -43,13 +44,14 @@ async def dispatch(
     triage_graph,
     thread_id=None,
     insight_graph=None,
+    report_graph=None,
 ) -> dict:
     """统一入口：路由意图后分发到对应子图。
 
     - chat：跑 chat 子图，返回最终回复；
     - triage：跑追问分诊子图（首次 / 带 thread_id 续跑），返回追问或分级建议；
     - insight：跑因果分析子图，返回相关线索；未提供子图时回占位 stub；
-    - report：返回占位 stub。
+    - report：跑报告解读子图；未提供子图时回占位 stub。
     """
     decision = await route(text, router_llm)
     intent = decision.intent
@@ -76,5 +78,15 @@ async def dispatch(
             return {"intent": intent, "kind": "stub", "reply": stub_reply(intent)}
         result = await insight_graph.ainvoke({"messages": [HumanMessage(content=text)]})
         return {"intent": intent, "kind": "insight", "final_insight": result["final_insight"]}
+
+    if intent == "report":
+        if report_graph is None:
+            return {"intent": intent, "kind": "stub", "reply": stub_reply(intent)}
+        result = await report_graph.ainvoke(initial_report_state(text))
+        return {
+            "intent": intent,
+            "kind": "report",
+            "final_report": result["final_report"],
+        }
 
     return {"intent": intent, "kind": "stub", "reply": stub_reply(intent)}

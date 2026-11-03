@@ -5,8 +5,8 @@
 
 ## 背景
 
-第 6 周要求「父图接回四个子图（统一入口）」，验收是「同一入口一句话路由到 chat / triage，
-insight / report 回 stub」。triage 子图带 `interrupt()` 与 Postgres checkpointer（多轮追问挂起/续跑）。
+第 6 周要求「父图接回四个子图（统一入口）」。insight 已在第 8 周接入；report 已在第 10 周
+接入带检索溯源的建议子图。triage 子图带 `interrupt()` 与 Postgres checkpointer（多轮追问挂起/续跑）。
 
 ## 决策
 
@@ -15,7 +15,7 @@ insight / report 回 stub」。triage 子图带 `interrupt()` 与 Postgres check
 1. `route()` 拿意图；
 2. `chat` → 直接 `chat_graph.ainvoke`；
 3. `triage` → 直接 `triage_graph.ainvoke`（首次用 `initial_triage_state`，带 `thread_id` 用 `Command(resume=...)`）；
-4. `insight` / `report` → `stub_reply` 占位。
+4. `insight` / `report` → 分发到对应子图；依赖注入缺图时回 `stub_reply`，保留增量和单测兼容性。
 
 父图 `build_agent_graph` 保持 chat + stub，仅供非流式 `/chat`（遗留）使用；`/chat/stream`、`/triage` 端点保留。
 
@@ -29,5 +29,5 @@ insight / report 回 stub」。triage 子图带 `interrupt()` 与 Postgres check
 ## 后果
 
 - 多一处 `dispatch` 编排（入口层），但各子图保持解耦，各自 checkpointer 职责清晰。
-- 后续 `insight` / `report` 子图接入时，只需在 `dispatch` 里加两个分支，不碰 chat / triage。
+- `insight` / `report` 子图已在 `dispatch` 增加独立分支，不影响 chat / triage。
 - 遗留 `/chat` 仍把 triage 回 stub（文档已标注），实际统一入口是 `/agent`。

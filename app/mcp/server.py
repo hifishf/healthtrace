@@ -35,6 +35,13 @@ async def query_metrics(
 
 
 @mcp.tool
+async def query_lab_reference_ranges(metric_codes: list[str] | None = None) -> dict:
+    """查询检验参考范围，可按指标代码过滤，返回 {"reference_ranges": [...]}。"""
+    ranges = await crud.list_lab_reference_ranges(metric_codes)
+    return {"reference_ranges": ranges}
+
+
+@mcp.tool
 async def import_metrics(user_id: str, source: str, metrics: list[dict]) -> dict:
     """导入健康指标（CSV 或 HealthKit 构造的行列表），逐行校验后覆盖入库。
 

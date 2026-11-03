@@ -1,4 +1,4 @@
-"""第 9 周报告解读/用药冲突种子：lab_reference_ranges + drug_interactions 幂等写入。
+"""报告演示种子：参考范围、药物交互和三年 LDL 合成序列幂等写入。
 
 先决条件：已 `alembic upgrade head`（0006 两张表已建）。
 运行：.venv/bin/python scripts/seed_report_demo.py
@@ -8,6 +8,7 @@ description 中（Micromedex / Lexicomp / 药品说明书 / 临床用药指南�
 """
 import asyncio
 import sys
+from datetime import date
 from pathlib import Path
 
 import asyncpg
@@ -37,6 +38,13 @@ DRUG_INTERACTIONS: list[tuple[str, str, str, str]] = [
     ("二甲双胍", "碘造影剂", "禁忌", "联用可能诱发乳酸性酸中毒（来源：药品说明书 演示）"),
     ("阿司匹林", "布洛芬", "中等", "布洛芬可能减弱阿司匹林抗血小板作用（来源：临床用药指南 演示）"),
     ("辛伐他汀", "葡萄柚汁", "中等", "葡萄柚汁抑制 CYP3A4，升高辛伐他汀暴露（来源：Lexicomp 演示）"),
+]
+
+# 第 10 周报告子图演示序列：仅覆盖没有被其它来源占用的日期。
+REPORT_DEMO_LDL: list[tuple[str, float]] = [
+    ("2024-01-15", 3.1),
+    ("2025-01-15", 3.4),
+    ("2026-01-15", 3.8),
 ]
 
 
@@ -76,15 +84,37 @@ async def _seed_drug_interactions(conn: asyncpg.Connection) -> int:
     return len(DRUG_INTERACTIONS)
 
 
+async def _seed_report_metrics(conn: asyncpg.Connection) -> int:
+    """写入三年合成 LDL 序列；已有非演示来源的数据不覆盖。"""
+    count = 0
+    for recorded_date, value in REPORT_DEMO_LDL:
+        row = await conn.fetchrow(
+            "INSERT INTO metric_records("
+            "user_id, metric_code, value, unit, recorded_date, source"
+            ") VALUES($1, 'ldl_cholesterol', $2, 'mmol/L', $3, 'synthetic_report_demo') "
+            "ON CONFLICT (user_id, metric_code, recorded_date) DO UPDATE SET "
+            "value=EXCLUDED.value, unit=EXCLUDED.unit, source=EXCLUDED.source "
+            "WHERE metric_records.source = 'synthetic_report_demo' RETURNING id",
+            settings.default_user_id,
+            value,
+            date.fromisoformat(recorded_date),
+        )
+        if row:
+            count += 1
+    return count
+
+
 async def main() -> None:
-    """幂等写入参考范围与交互规则，打印条数统计。"""
+    """幂等写入参考范围、交互规则和报告演示指标。"""
     dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
     conn = await asyncpg.connect(dsn)
     try:
         lab_count = await _seed_lab_reference_ranges(conn)
         drug_count = await _seed_drug_interactions(conn)
+        metric_count = await _seed_report_metrics(conn)
         print(
             f"lab_reference_ranges={lab_count} drug_interactions={drug_count} "
+            f"report_metrics={metric_count} "
             "（幂等可重跑，交互规则来源见 description）"
         )
     finally:

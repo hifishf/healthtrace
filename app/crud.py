@@ -309,6 +309,28 @@ async def get_reference_units(metric_codes: list[str]) -> dict[str, set[str]]:
     return result
 
 
+async def list_lab_reference_ranges(metric_codes: list[str] | None = None) -> list[dict]:
+    """查询检验参考范围，可按指标代码过滤，返回 JSON 可序列化列表。"""
+    stmt = select(LabReferenceRange)
+    if metric_codes:
+        stmt = stmt.where(LabReferenceRange.metric_code.in_(metric_codes))
+    stmt = stmt.order_by(LabReferenceRange.metric_code, LabReferenceRange.id)
+    async with async_session() as session:
+        rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": row.id,
+            "metric_code": row.metric_code,
+            "unit": row.unit,
+            "low": float(row.low) if row.low is not None else None,
+            "high": float(row.high) if row.high is not None else None,
+            "age_group": row.age_group,
+            "sex": row.sex,
+        }
+        for row in rows
+    ]
+
+
 async def bulk_upsert_metrics(
     user_id: UUID,
     rows: list[dict],
