@@ -104,6 +104,7 @@ def build_metric_findings(
         status_text = f"最近一次结果{status}" if status else "暂无匹配参考范围"
         findings.append(
             {
+                "finding_id": f"metric:{metric_code}",
                 "kind": "metric_trend",
                 "metric_code": metric_code,
                 "label": label,
@@ -122,6 +123,7 @@ def build_interaction_findings(interactions: list[dict]) -> list[dict]:
     """把确定性药物交互命中转为统一发现结构。"""
     return [
         {
+            "finding_id": f"drug:{hit['drug_a']}:{hit['drug_b']}",
             "kind": "drug_interaction",
             "drug_a": hit["drug_a"],
             "drug_b": hit["drug_b"],
@@ -202,10 +204,16 @@ def _assemble_advice(
             )
         else:
             text = (
-                f"{finding['text']}建议携带连续报告咨询专业人员；"
-                "是否需要复查或治疗由医生结合症状和病史判断。"
+                f"{finding['text']}建议携带完整报告咨询专业人员，"
+                "由其结合症状、用药和其他检查评估。"
             )
-        advice.append({"text": text, "source_keys": source_keys})
+        advice.append(
+            {
+                "finding_id": finding["finding_id"],
+                "text": text,
+                "source_keys": source_keys,
+            }
+        )
     return advice
 
 

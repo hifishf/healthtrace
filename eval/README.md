@@ -12,6 +12,9 @@
 
 # 语义评估（golden 集 + judge，第 3/4 步接入）
 .venv/bin/python -m eval.harness semantic
+
+# 报告建议 RAGAS Faithfulness 专项（第 10 周）
+.venv/bin/python -m eval.harness faithfulness
 ```
 
 ## 为什么要有统一入口
@@ -40,3 +43,17 @@ judge 固定 `temperature=0`，保证同一输入打分可复现。
 2. 对比实际级别与 `expected_level`，统计「级别命中率」（确定性，不依赖 judge）。
 
 两条结果分开看：分数衡量「话说得好不好」，级别命中率衡量「路走没走对」。
+
+## 报告 faithfulness
+
+`faithfulness` 子命令执行真实报告子图，只把建议实际 `source_keys` 指向的知识正文
+作为 RAGAS `retrieved_contexts`。未引用来源不会进入上下文，不能替不忠实建议兜底。
+
+冻结阈值：
+
+- 每条用例 faithfulness `>= 0.80`
+- 全量或抽样均值 `>= 0.85`
+- 任一不达标时命令返回非零，可直接作为 CI 门禁
+
+golden 文件：`eval/golden/report_faithfulness.jsonl`，当前 10 条，覆盖报告解读、
+趋势、复查、通俗解释等提问方式。

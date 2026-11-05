@@ -2,7 +2,8 @@
 
 用法（在仓库根目录）：
     .venv/bin/python -m eval.harness deterministic   # 确定性检查（等价全量 pytest）
-    .venv/bin/python -m eval.harness semantic        # 语义评估（golden 集 + judge，后续步接入）
+    .venv/bin/python -m eval.harness semantic        # 分诊建议语义评估
+    .venv/bin/python -m eval.harness faithfulness    # 报告建议 RAGAS Faithfulness
 
 设计意图：确定性检查（pytest）与语义检查（judge 打分）本质都是「评估」，
 只是判定方式不同；收敛到同一个入口后，后续 insight / report 子图复用同一套 harness，
@@ -27,20 +28,14 @@ from eval.runner import run_triage_batch
 # 仓库根（eval/ 的上一级）：从任意工作目录运行都能定位 tests 与 golden
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_DIR = REPO_ROOT / "eval" / "golden"
+TRIAGE_GOLDEN_PATH = GOLDEN_DIR / "advice_quality.jsonl"
 
 
-def iter_golden(directory: Path = GOLDEN_DIR) -> Iterator[dict]:
-    """按行读取 golden 目录下所有 jsonl，逐条 yield（dict）。
-
-    golden 契约（冻结）：每行一个 JSON 对象，至少含 id / input / expected 三个字段。
-    空行忽略；文件按名称排序，保证遍历顺序稳定。
-    """
-    for path in sorted(directory.glob("*.jsonl")):
-        with path.open(encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
+def iter_golden_file(path: Path) -> Iterator[dict]:
+    """读取单个 golden JSONL 文件，空行忽略。"""
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
                 yield json.loads(line)
 
 
@@ -62,7 +57,7 @@ def _sample(cases: list[dict], n: int | None) -> list[dict]:
 
 def run_semantic(args: argparse.Namespace) -> int:
     """语义评估：读 golden -> 跑真实分诊 -> judge 打分 -> 汇总。"""
-    cases = list(iter_golden())
+    cases = list(iter_golden_file(TRIAGE_GOLDEN_PATH))
     if not cases:
         print(f"golden 目录为空：{GOLDEN_DIR}，请先放用例。")
         return 0
@@ -99,6 +94,14 @@ def run_semantic(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_report_faithfulness(args: argparse.Namespace) -> int:
+    """调用报告 faithfulness 专项评估，并透传非零门禁结果。"""
+    from eval.report_faithfulness import main as faithfulness_main
+
+    argv = [] if args.sample is None else ["--sample", str(args.sample)]
+    return faithfulness_main(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     """解析子命令并分发到对应处理函数。"""
     parser = argparse.ArgumentParser(
@@ -114,6 +117,10 @@ def main(argv: list[str] | None = None) -> int:
     sem = sub.add_parser("semantic", help="跑语义评估（golden 集 + judge）")
     sem.add_argument("--sample", type=int, default=None, help="抽样条数，默认全量")
     sem.set_defaults(func=run_semantic)
+
+    faith = sub.add_parser("faithfulness", help="报告建议 RAGAS Faithfulness 专项")
+    faith.add_argument("--sample", type=int, default=None, help="抽样条数，默认全量")
+    faith.set_defaults(func=run_report_faithfulness)
 
     args = parser.parse_args(argv)
     return args.func(args)

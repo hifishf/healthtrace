@@ -1,0 +1,10 @@
+{"id": "faith-report-001", "input": "帮我看下我的体检报告", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "默认报告解读"}
+{"id": "faith-report-002", "input": "我的血脂这几年有什么变化", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "血脂纵向趋势"}
+{"id": "faith-report-003", "input": "LDL 一直上升需要复查吗", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "LDL 复查建议"}
+{"id": "faith-report-004", "input": "体检里哪些指标需要重点关注", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "异常指标摘要"}
+{"id": "faith-report-005", "input": "低密度脂蛋白偏高应该怎么理解", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "参考范围解释"}
+{"id": "faith-report-006", "input": "结合我最近几次血脂结果给点建议", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "连续报告建议"}
+{"id": "faith-report-007", "input": "我的报告趋势不好吗", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "风险措辞边界"}
+{"id": "faith-report-008", "input": "去年到今年 LDL 变化说明了什么", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "时间跨度解释"}
+{"id": "faith-report-009", "input": "体检指标异常后下一步做什么", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "后续行动建议"}
+{"id": "faith-report-010", "input": "请用我能理解的话解释这份报告", "expected_source_prefix": "lab:ldl_cholesterol:", "note": "通俗解释"}
